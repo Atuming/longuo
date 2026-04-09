@@ -1,0 +1,76 @@
+/* ===== 全局 CSS 变量 ===== */
+:root {
+  /* 色彩 */
+  --color-primary: #2D3748;
+  --color-accent: #3182CE;
+  --color-bg: #F7FAFC;
+  --color-card: #FFFFFF;
+  --color-text: #1A202C;
+  --color-text-secondary: #4A5568;
+  --color-border: #E2E8F0;
+  --color-error: #E53E3E;
+  --color-success: #38A169;
+  --color-warning: #ED8936;
+
+  /* 字体 */
+  --font-family: 'Inter', 'Noto Sans SC', 'Source Han Sans SC', system-ui, sans-serif;
+
+  /* 字号 */
+  --font-h1: 600 20px/1.4 var(--font-family);
+  --font-h2: 600 16px/1.4 var(--font-family);
+  --font-body: 400 14px/1.5 var(--font-family);
+  --font-small: 400 12px/1.5 var(--font-family);
+  --font-aux: 400 11px/1.5 var(--font-family);
+
+  /* 间距 */
+  --spacing-xs: 8px;
+  --spacing-sm: 16px;
+  --spacing-md: 24px;
+  --spacing-lg: 32px;
+
+  /* 圆角 */
+  --radius: 6px;
+
+  /* 阴影 */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.1);
+
+  /* 布局 */
+  --sidebar-width: 260px;
+  --panel-width: 320px;
+  --toolbar-height: 50px;
+}
+
+/* ===== 全局重置 ===== */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+  font-family: var(--font-family);
+}
+
+input, textarea, select {
+  font-family: var(--font-family);
+}

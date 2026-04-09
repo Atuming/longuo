@@ -1,0 +1,13 @@
+{
+  "providers": [
+    {
+      "id": "default-provider",
+      "name": "智谱 GLM",
+      "apiKey": "92842b46fba8496c9b5d64389e2a6586.C5OuTElpd8m5NAjW",
+      "modelName": "glm-4.6v",
+      "apiEndpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "timeoutMs": 60000
+    }
+  ],
+  "activeProviderId": "default-provider"
+}
