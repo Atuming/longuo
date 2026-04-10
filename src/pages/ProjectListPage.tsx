@@ -182,7 +182,7 @@ export function ProjectListPage({ projectStore }: ProjectListPageProps) {
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.logo}>
-          <img src="/logo.png" alt="火龙果编辑器" style={styles.logoIcon} />
+          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="火龙果编辑器" style={styles.logoIcon} />
           <span style={styles.logoText}>火龙果编辑器</span>
         </div>
         <div style={styles.headerActions}>
