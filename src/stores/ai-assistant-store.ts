@@ -1,5 +1,5 @@
 import type { AIAssistantStore } from '../types/stores';
-import type { AIConfig, AIProvider, PromptTemplate } from '../types/ai';
+import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord } from '../types/ai';
 
 /** 内置默认中文小说写作 Prompt 模板 */
 export const DEFAULT_PROMPT_TEMPLATE: PromptTemplate = {
@@ -52,6 +52,40 @@ function cloneConfig(config: AIConfig): AIConfig {
 }
 
 const STORAGE_KEY = 'novel-assistant-ai-config';
+const HISTORY_MAX_RECORDS = 50;
+
+/** Get localStorage key for AI history of a project */
+function historyStorageKey(projectId: string): string {
+  return `novel-ai-history-${projectId}`;
+}
+
+/** Load history records from localStorage */
+function loadHistory(projectId: string): AIHistoryRecord[] {
+  try {
+    const raw = localStorage.getItem(historyStorageKey(projectId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      // Corrupted data — clear it
+      localStorage.removeItem(historyStorageKey(projectId));
+      return [];
+    }
+    return parsed as AIHistoryRecord[];
+  } catch {
+    // Corrupted or unreadable — clear and return empty
+    try { localStorage.removeItem(historyStorageKey(projectId)); } catch { /* silent */ }
+    return [];
+  }
+}
+
+/** Persist history records to localStorage */
+function saveHistory(projectId: string, records: AIHistoryRecord[]): void {
+  try {
+    localStorage.setItem(historyStorageKey(projectId), JSON.stringify(records));
+  } catch {
+    // localStorage not available or full — silent degradation
+  }
+}
 
 /** 将 AIConfig 保存到 localStorage（会话内覆盖） */
 function persistToLocalStorage(config: AIConfig): void {
@@ -204,6 +238,45 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
         }
       }
       return cloneTemplate(config.defaultTemplate);
+    },
+
+    addHistoryRecord(projectId: string, record: Omit<AIHistoryRecord, 'id' | 'timestamp'>): AIHistoryRecord {
+      const records = loadHistory(projectId);
+      const newRecord: AIHistoryRecord = {
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        projectId: record.projectId,
+        skillLabel: record.skillLabel,
+        userInput: record.userInput,
+        generatedContent: record.generatedContent,
+      };
+      records.push(newRecord);
+      // Enforce max 50 records — delete oldest first
+      while (records.length > HISTORY_MAX_RECORDS) {
+        records.shift();
+      }
+      saveHistory(projectId, records);
+      return { ...newRecord };
+    },
+
+    listHistory(projectId: string): AIHistoryRecord[] {
+      const records = loadHistory(projectId);
+      // Return in reverse chronological order (newest first)
+      return records.slice().reverse().map((r) => ({ ...r }));
+    },
+
+    getHistoryRecord(projectId: string, id: string): AIHistoryRecord | undefined {
+      const records = loadHistory(projectId);
+      const found = records.find((r) => r.id === id);
+      return found ? { ...found } : undefined;
+    },
+
+    clearHistory(projectId: string): void {
+      try {
+        localStorage.removeItem(historyStorageKey(projectId));
+      } catch {
+        // silent degradation
+      }
     },
   };
 }

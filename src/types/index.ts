@@ -23,8 +23,18 @@ export type { PlotThread } from './plot';
 // 一致性检查
 export type { ConsistencyIssue, ConsistencyCheckResult } from './consistency';
 
+// 日更目标
+export type { DailyGoalConfig, DailyGoalStore } from './daily-goal';
+
+// 快照
+export type { Snapshot, SnapshotStore } from './snapshot';
+
+// 主题
+export type { ThemeMode, ThemeStore } from './theme';
+
 // 导出
-export type { ExportOptions, ExportResult } from './export';
+export type { ExportOptions, ExportResult, TypographyOptions } from './export';
+export { DEFAULT_TYPOGRAPHY } from './export';
 
 // AI 辅助写作
 export type { AIProvider, PromptTemplate, AIConfig, PackedContext, AIGenerateRequest, AIGenerateResult } from './ai';

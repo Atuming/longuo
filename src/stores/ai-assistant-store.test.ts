@@ -274,3 +274,157 @@ describe('AIAssistantStore', () => {
     });
   });
 });
+
+
+describe('AI History Records', () => {
+  const projectId = 'test-project-1';
+  const projectId2 = 'test-project-2';
+
+  beforeEach(() => {
+    localStorage.removeItem(`novel-ai-history-${projectId}`);
+    localStorage.removeItem(`novel-ai-history-${projectId2}`);
+  });
+
+  function makeHistoryInput(overrides?: Partial<Omit<import('../types/ai').AIHistoryRecord, 'id' | 'timestamp'>>) {
+    return {
+      projectId,
+      skillLabel: '续写',
+      userInput: '请帮我续写这段话',
+      generatedContent: '这是AI生成的内容',
+      ...overrides,
+    };
+  }
+
+  describe('addHistoryRecord', () => {
+    it('should add a record and return it with id and timestamp', () => {
+      const store = createAIAssistantStore();
+      const record = store.addHistoryRecord(projectId, makeHistoryInput());
+      expect(record.id).toBeTruthy();
+      expect(record.timestamp).toBeTruthy();
+      expect(record.skillLabel).toBe('续写');
+      expect(record.userInput).toBe('请帮我续写这段话');
+      expect(record.generatedContent).toBe('这是AI生成的内容');
+      expect(record.projectId).toBe(projectId);
+    });
+
+    it('should persist to localStorage', () => {
+      const store = createAIAssistantStore();
+      store.addHistoryRecord(projectId, makeHistoryInput());
+      const raw = localStorage.getItem(`novel-ai-history-${projectId}`);
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!);
+      expect(parsed).toHaveLength(1);
+    });
+
+    it('should auto-delete oldest records when exceeding 50', () => {
+      const store = createAIAssistantStore();
+      const ids: string[] = [];
+      for (let i = 0; i < 52; i++) {
+        const r = store.addHistoryRecord(projectId, makeHistoryInput({
+          userInput: `input-${i}`,
+        }));
+        ids.push(r.id);
+      }
+      const list = store.listHistory(projectId);
+      expect(list.length).toBe(50);
+      // The first two (oldest) should have been removed
+      expect(list.find((r) => r.id === ids[0])).toBeUndefined();
+      expect(list.find((r) => r.id === ids[1])).toBeUndefined();
+      // The last one should still be present
+      expect(list.find((r) => r.id === ids[51])).toBeDefined();
+    });
+  });
+
+  describe('listHistory', () => {
+    it('should return empty array when no records exist', () => {
+      const store = createAIAssistantStore();
+      expect(store.listHistory(projectId)).toEqual([]);
+    });
+
+    it('should return records in reverse chronological order (newest first)', () => {
+      const store = createAIAssistantStore();
+      const r1 = store.addHistoryRecord(projectId, makeHistoryInput({ userInput: 'first' }));
+      const r2 = store.addHistoryRecord(projectId, makeHistoryInput({ userInput: 'second' }));
+      const r3 = store.addHistoryRecord(projectId, makeHistoryInput({ userInput: 'third' }));
+      const list = store.listHistory(projectId);
+      expect(list).toHaveLength(3);
+      expect(list[0].id).toBe(r3.id);
+      expect(list[1].id).toBe(r2.id);
+      expect(list[2].id).toBe(r1.id);
+    });
+
+    it('should isolate records by project', () => {
+      const store = createAIAssistantStore();
+      store.addHistoryRecord(projectId, makeHistoryInput({ projectId }));
+      store.addHistoryRecord(projectId2, makeHistoryInput({ projectId: projectId2 }));
+      const list1 = store.listHistory(projectId);
+      const list2 = store.listHistory(projectId2);
+      expect(list1).toHaveLength(1);
+      expect(list2).toHaveLength(1);
+      expect(list1[0].projectId).toBe(projectId);
+      expect(list2[0].projectId).toBe(projectId2);
+    });
+  });
+
+  describe('getHistoryRecord', () => {
+    it('should return a record by id', () => {
+      const store = createAIAssistantStore();
+      const added = store.addHistoryRecord(projectId, makeHistoryInput());
+      const found = store.getHistoryRecord(projectId, added.id);
+      expect(found).toBeDefined();
+      expect(found!.id).toBe(added.id);
+      expect(found!.skillLabel).toBe('续写');
+    });
+
+    it('should return undefined for non-existent id', () => {
+      const store = createAIAssistantStore();
+      expect(store.getHistoryRecord(projectId, 'non-existent')).toBeUndefined();
+    });
+
+    it('should return a clone (no shared references)', () => {
+      const store = createAIAssistantStore();
+      const added = store.addHistoryRecord(projectId, makeHistoryInput());
+      const found1 = store.getHistoryRecord(projectId, added.id);
+      const found2 = store.getHistoryRecord(projectId, added.id);
+      expect(found1).not.toBe(found2);
+    });
+  });
+
+  describe('clearHistory', () => {
+    it('should remove all records for a project', () => {
+      const store = createAIAssistantStore();
+      store.addHistoryRecord(projectId, makeHistoryInput());
+      store.addHistoryRecord(projectId, makeHistoryInput());
+      store.clearHistory(projectId);
+      expect(store.listHistory(projectId)).toEqual([]);
+    });
+
+    it('should not affect other projects', () => {
+      const store = createAIAssistantStore();
+      store.addHistoryRecord(projectId, makeHistoryInput({ projectId }));
+      store.addHistoryRecord(projectId2, makeHistoryInput({ projectId: projectId2 }));
+      store.clearHistory(projectId);
+      expect(store.listHistory(projectId)).toEqual([]);
+      expect(store.listHistory(projectId2)).toHaveLength(1);
+    });
+  });
+
+  describe('error handling', () => {
+    it('should handle corrupted localStorage data gracefully', () => {
+      localStorage.setItem(`novel-ai-history-${projectId}`, 'not-valid-json');
+      const store = createAIAssistantStore();
+      // Should clear corrupted data and return empty
+      expect(store.listHistory(projectId)).toEqual([]);
+      // Should be able to add new records after corruption
+      const record = store.addHistoryRecord(projectId, makeHistoryInput());
+      expect(record.id).toBeTruthy();
+      expect(store.listHistory(projectId)).toHaveLength(1);
+    });
+
+    it('should handle non-array localStorage data gracefully', () => {
+      localStorage.setItem(`novel-ai-history-${projectId}`, JSON.stringify({ not: 'an array' }));
+      const store = createAIAssistantStore();
+      expect(store.listHistory(projectId)).toEqual([]);
+    });
+  });
+});

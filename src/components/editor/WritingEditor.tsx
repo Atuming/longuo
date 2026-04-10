@@ -6,7 +6,10 @@ import { languages } from '@codemirror/language-data';
 import { defaultKeymap, history, historyKeymap, undo, redo } from '@codemirror/commands';
 import { searchKeymap } from '@codemirror/search';
 import type { ChapterStore, ProjectStore } from '../../types/stores';
+import type { Character } from '../../types/character';
 import { showToast } from '../ui/Toast';
+import { DailyGoalProgress } from './DailyGoalProgress';
+import { createCrossReferenceExtension } from '../../lib/cross-reference';
 
 /* ── styles ── */
 const styles: Record<string, CSSProperties> = {
@@ -53,19 +56,36 @@ const STATUS_LABELS: Record<SaveStatus, { text: string; color: string }> = {
   manual: { text: '手动保存模式', color: 'var(--color-warning)' },
 };
 
+/* ── CodeMirror dark theme ── */
+const darkEditorTheme = EditorView.theme({
+  '&': { backgroundColor: '#1A202C', color: '#E2E8F0' },
+  '.cm-content': { caretColor: '#63B3ED' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#63B3ED' },
+  '.cm-selectionBackground, .cm-content ::selection': { backgroundColor: '#4A556844' },
+  '.cm-activeLine': { backgroundColor: '#2D374880' },
+  '.cm-gutters': { backgroundColor: '#2D3748', color: '#A0AEC0', borderRight: '1px solid #4A5568' },
+  '.cm-activeLineGutter': { backgroundColor: '#4A556840' },
+  '.cm-lineNumbers .cm-gutterElement': { color: '#A0AEC0' },
+}, { dark: true });
+
 /* ── component ── */
 interface WritingEditorProps {
   chapterId: string | null;
   chapterStore: ChapterStore;
   projectStore: ProjectStore;
+  projectId?: string;
+  isDark?: boolean;
+  getCharacters?: () => Character[];
 }
 
 /** 暴露给父组件的方法 */
 export interface WritingEditorHandle {
   appendContent: (content: string) => void;
+  insertAtCursor: (content: string) => void;
+  getCursorPosition: () => number | null;
 }
 
-export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>(function WritingEditor({ chapterId, chapterStore, projectStore }, ref) {
+export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>(function WritingEditor({ chapterId, chapterStore, projectStore, projectId, isDark = false, getCharacters }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [cursorInfo, setCursorInfo] = useState({ line: 1, col: 1 });
@@ -75,18 +95,47 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* ── expose appendContent to parent ── */
+  /* ── expose appendContent / insertAtCursor / getCursorPosition to parent ── */
+  const appendContent = useCallback((content: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const docLength = view.state.doc.length;
+    const separator = docLength > 0 ? '\n\n' : '';
+    view.dispatch({
+      changes: { from: docLength, insert: separator + content },
+      selection: { anchor: docLength + separator.length + content.length },
+    });
+    view.focus();
+  }, []);
+
   useImperativeHandle(ref, () => ({
-    appendContent(content: string) {
+    appendContent,
+    insertAtCursor(content: string) {
       const view = viewRef.current;
-      if (!view) return;
-      const docLength = view.state.doc.length;
-      const separator = docLength > 0 ? '\n\n' : '';
-      view.dispatch({
-        changes: { from: docLength, insert: separator + content },
-        selection: { anchor: docLength + separator.length + content.length },
-      });
+      if (!view) {
+        appendContent(content);
+        return;
+      }
+      const { from, to, head } = view.state.selection.main;
+      if (from !== to) {
+        // Replace selected text
+        view.dispatch({
+          changes: { from, to, insert: content },
+          selection: { anchor: from + content.length },
+        });
+      } else {
+        // Insert at cursor position
+        view.dispatch({
+          changes: { from: head, insert: content },
+          selection: { anchor: head + content.length },
+        });
+      }
       view.focus();
+    },
+    getCursorPosition(): number | null {
+      const view = viewRef.current;
+      if (!view) return null;
+      return view.state.selection.main.head;
     },
   }));
 
@@ -170,24 +219,30 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
       setCursorInfo({ line: line.number, col: pos - line.from + 1 });
     });
 
+    const baseTheme = EditorView.theme({
+      '&': { height: '100%', fontSize: '15px' },
+      '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--font-family)' },
+      '.cm-content': { padding: '16px 24px', minHeight: '300px' },
+      '.cm-gutters': { background: 'var(--color-card)', borderRight: '1px solid var(--color-border)' },
+    });
+
+    const extensions = [
+      lineNumbers(),
+      drawSelection(),
+      highlightActiveLine(),
+      history(),
+      keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+      markdown({ base: markdownLanguage, codeLanguages: languages }),
+      updateListener,
+      EditorView.lineWrapping,
+      baseTheme,
+      ...(isDark ? [darkEditorTheme] : []),
+      ...(getCharacters ? createCrossReferenceExtension(getCharacters) : []),
+    ];
+
     const state = EditorState.create({
       doc: initialContent,
-      extensions: [
-        lineNumbers(),
-        drawSelection(),
-        highlightActiveLine(),
-        history(),
-        keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
-        updateListener,
-        EditorView.lineWrapping,
-        EditorView.theme({
-          '&': { height: '100%', fontSize: '15px' },
-          '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--font-family)' },
-          '.cm-content': { padding: '16px 24px', minHeight: '300px' },
-          '.cm-gutters': { background: '#FAFAFA', borderRight: '1px solid var(--color-border)' },
-        }),
-      ],
+      extensions,
     });
 
     const view = new EditorView({ state, parent: containerRef.current });
@@ -196,7 +251,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
 
     return () => { view.destroy(); viewRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chapterId]);
+  }, [chapterId, isDark]);
 
   /* ── toolbar insert ── */
   const insertMark = (prefix: string, suffix: string) => {
@@ -248,7 +303,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
       </div>
 
       {/* Breadcrumb */}
-      <div style={{ padding: '4px 12px', fontSize: 12, color: 'var(--color-text-secondary)', borderBottom: '1px solid var(--color-border)', background: '#FAFAFA' }}>
+      <div style={{ padding: '4px 12px', fontSize: 12, color: 'var(--color-text-secondary)', borderBottom: '1px solid var(--color-border)', background: 'var(--color-card)' }}>
         📍 {breadcrumb}
       </div>
 
@@ -259,6 +314,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
       <div style={styles.statusBar}>
         <span>字数: {wordCount}</span>
         <span>行 {cursorInfo.line} : 列 {cursorInfo.col}</span>
+        {projectId && <DailyGoalProgress projectId={projectId} wordCount={wordCount} />}
         <span style={{ marginLeft: 'auto', color: statusInfo.color }}>{statusInfo.text}</span>
       </div>
     </div>

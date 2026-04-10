@@ -1,6 +1,7 @@
 import type { ExportEngine } from '../types/engines';
 import type { Chapter } from '../types/chapter';
-import type { ExportOptions, ExportResult } from '../types/export';
+import type { ExportOptions, ExportResult, TypographyOptions } from '../types/export';
+import { DEFAULT_TYPOGRAPHY } from '../types/export';
 import JSZip from 'jszip';
 import { jsPDF } from 'jspdf';
 
@@ -58,6 +59,18 @@ export function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * 根据排版选项生成 EPUB 用的 CSS 字符串。
+ */
+export function generateEpubTypographyCss(options: TypographyOptions): string {
+  return `body {
+  font-family: ${JSON.stringify(options.fontFamily)};
+  font-size: ${options.fontSize}pt;
+  line-height: ${options.lineHeight};
+  margin: ${options.marginMm}mm;
+}`;
 }
 
 /**
@@ -183,13 +196,18 @@ export function createExportEngine(): ExportEngine {
   async function exportAsPdf(chapters: Chapter[], options: ExportOptions): Promise<ExportResult> {
     let partialDoc: jsPDF | null = null;
     try {
+      const typo = options.typography ?? DEFAULT_TYPOGRAPHY;
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       partialDoc = doc;
 
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
-      const margin = 20;
+      const margin = typo.marginMm;
       const contentWidth = pageWidth - margin * 2;
+      // Convert pt fontSize to mm-based lineHeight for jsPDF text rendering
+      // 1pt ≈ 0.3528mm; lineHeight multiplier scales the spacing
+      const bodyFontSizePt = typo.fontSize;
+      const lineHeightMm = bodyFontSizePt * 0.3528 * typo.lineHeight;
       let y = margin;
 
       // 标题页
@@ -208,25 +226,24 @@ export function createExportEngine(): ExportEngine {
         y = margin;
 
         // 章节标题
-        doc.setFontSize(18);
+        doc.setFontSize(bodyFontSizePt * 1.5);
         const chapterTitleLines = doc.splitTextToSize(chapter.title, contentWidth);
         doc.text(chapterTitleLines, margin, y);
         y += chapterTitleLines.length * 8 + 8;
 
         // 章节内容（去除 Markdown 标记）
-        doc.setFontSize(12);
+        doc.setFontSize(bodyFontSizePt);
         const plainText = stripMarkdown(chapter.content);
         if (plainText) {
           const textLines = doc.splitTextToSize(plainText, contentWidth);
-          const lineHeight = 6;
 
           for (const line of textLines) {
-            if (y + lineHeight > pageHeight - margin) {
+            if (y + lineHeightMm > pageHeight - margin) {
               doc.addPage();
               y = margin;
             }
             doc.text(line, margin, y);
-            y += lineHeight;
+            y += lineHeightMm;
           }
         }
       }
@@ -253,6 +270,8 @@ export function createExportEngine(): ExportEngine {
   async function exportAsEpub(chapters: Chapter[], options: ExportOptions): Promise<ExportResult> {
     let partialZip: JSZip | null = null;
     try {
+      const typo = options.typography ?? DEFAULT_TYPOGRAPHY;
+      const typoCss = generateEpubTypographyCss(typo);
       const zip = new JSZip();
       partialZip = zip;
 
@@ -280,7 +299,11 @@ export function createExportEngine(): ExportEngine {
         zip.file(`OEBPS/${filename}`, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
-<head><title>${escapeHtml(chapter.title)}</title></head>
+<head><title>${escapeHtml(chapter.title)}</title>
+<style>
+${typoCss}
+</style>
+</head>
 <body>
   <h1>${escapeHtml(chapter.title)}</h1>
 ${paragraphs}

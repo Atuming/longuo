@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useMemo, type CSSProperties } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback, type CSSProperties } from 'react';
 import type { Chapter } from '../../types/chapter';
 import type { ChapterStore } from '../../types/stores';
 import { Button } from '../ui/Button';
+import { calculateDropPosition, isValidDrop, type DropInfo } from './outline-drag-utils';
 
 /* ── styles ── */
 const styles: Record<string, CSSProperties> = {
@@ -15,6 +16,8 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 'var(--radius)',
     fontSize: 14,
     userSelect: 'none',
+    position: 'relative' as const,
+    transition: 'transform 0.2s ease, background 0.15s ease',
   },
   nodeHover: { background: '#EDF2F7' },
   nodeSelected: { background: '#EBF8FF' },
@@ -41,9 +44,34 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex', gap: 6, padding: 'var(--spacing-xs)',
     borderTop: '1px solid var(--color-border)',
   },
+  dropLineBefore: {
+    position: 'absolute' as const,
+    top: -1,
+    left: 0,
+    right: 0,
+    height: 2,
+    background: 'var(--color-accent, #3182CE)',
+    borderRadius: 1,
+    pointerEvents: 'none' as const,
+    zIndex: 10,
+  },
+  dropLineAfter: {
+    position: 'absolute' as const,
+    bottom: -1,
+    left: 0,
+    right: 0,
+    height: 2,
+    background: 'var(--color-accent, #3182CE)',
+    borderRadius: 1,
+    pointerEvents: 'none' as const,
+    zIndex: 10,
+  },
+  dropInside: {
+    background: 'rgba(49, 130, 206, 0.12)',
+  },
 };
 
-/* ── helpers ── */
+/* ── tree builder ── */
 function buildTree(chapters: Chapter[]): Map<string | null, Chapter[]> {
   const map = new Map<string | null, Chapter[]>();
   for (const ch of chapters) {
@@ -69,7 +97,8 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; chapterId: string } | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dropInfo, setDropInfo] = useState<DropInfo | null>(null);
+  const [dragSourceId, setDragSourceId] = useState<string | null>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
   // Sync chapters when chapterStore or projectId changes (render-phase update)
@@ -93,6 +122,21 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
   }, [contextMenu]);
 
   const tree = buildTree(chapters);
+
+  /** Collect all descendant IDs of a given chapter */
+  const getDescendantIds = useCallback((id: string): string[] => {
+    const result: string[] = [];
+    const collect = (parentId: string) => {
+      for (const ch of chapters) {
+        if (ch.parentId === parentId) {
+          result.push(ch.id);
+          collect(ch.id);
+        }
+      }
+    };
+    collect(id);
+    return result;
+  }, [chapters]);
 
   /* ── actions ── */
   const toggleCollapse = (id: string) => {
@@ -158,16 +202,104 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
   const handleDragStart = (e: React.DragEvent, id: string) => {
     e.dataTransfer.setData('text/plain', id);
     e.dataTransfer.effectAllowed = 'move';
+    setDragSourceId(id);
+
+    // Create semi-transparent drag image
+    const target = e.currentTarget as HTMLElement;
+    const clone = target.cloneNode(true) as HTMLElement;
+    clone.style.opacity = '0.6';
+    clone.style.position = 'absolute';
+    clone.style.top = '-9999px';
+    clone.style.left = '-9999px';
+    clone.style.background = '#fff';
+    clone.style.borderRadius = '4px';
+    clone.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+    document.body.appendChild(clone);
+    e.dataTransfer.setDragImage(clone, 20, 12);
+    // Clean up clone after drag starts
+    requestAnimationFrame(() => {
+      document.body.removeChild(clone);
+    });
+  };
+
+  const handleDragOver = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!dragSourceId || dragSourceId === targetId) {
+      setDropInfo(null);
+      return;
+    }
+
+    const source = chapterStore.getChapter(dragSourceId);
+    const target = chapterStore.getChapter(targetId);
+    if (!source || !target) return;
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const position = calculateDropPosition(e.clientY, rect.top, rect.height);
+
+    // Validate the drop
+    if (!isValidDrop(source.level, target.level, position, dragSourceId, targetId, getDescendantIds)) {
+      e.dataTransfer.dropEffect = 'none';
+      setDropInfo(null);
+      return;
+    }
+
+    e.dataTransfer.dropEffect = 'move';
+    setDropInfo({ targetId, position });
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only clear if we're actually leaving the element (not entering a child)
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    if (!relatedTarget || !(e.currentTarget as HTMLElement).contains(relatedTarget)) {
+      setDropInfo(null);
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDropInfo(null);
+    setDragSourceId(null);
   };
 
   const handleDrop = (e: React.DragEvent, targetId: string) => {
     e.preventDefault();
-    setDragOverId(null);
     const sourceId = e.dataTransfer.getData('text/plain');
-    if (!sourceId || sourceId === targetId) return;
+    if (!sourceId || sourceId === targetId || !dropInfo) {
+      setDropInfo(null);
+      setDragSourceId(null);
+      return;
+    }
+
+    const source = chapterStore.getChapter(sourceId);
     const target = chapterStore.getChapter(targetId);
-    if (!target) return;
-    chapterStore.reorderChapter(sourceId, target.sortOrder, target.parentId);
+    if (!source || !target) {
+      setDropInfo(null);
+      setDragSourceId(null);
+      return;
+    }
+
+    const { position } = dropInfo;
+
+    // Final validation
+    if (!isValidDrop(source.level, target.level, position, sourceId, targetId, getDescendantIds)) {
+      setDropInfo(null);
+      setDragSourceId(null);
+      return;
+    }
+
+    if (position === 'inside') {
+      // Insert as child of target, at the end
+      const children = chapters.filter((c) => c.parentId === targetId);
+      chapterStore.reorderChapter(sourceId, children.length, targetId);
+    } else if (position === 'before') {
+      // Insert as sibling before target
+      chapterStore.reorderChapter(sourceId, target.sortOrder, target.parentId);
+    } else {
+      // 'after' - Insert as sibling after target
+      chapterStore.reorderChapter(sourceId, target.sortOrder + 1, target.parentId);
+    }
+
+    setDropInfo(null);
+    setDragSourceId(null);
     refreshChapters();
   };
 
@@ -178,26 +310,35 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
     const isCollapsed = collapsed.has(ch.id);
     const isSelected = ch.id === selectedChapterId;
     const isEditing = ch.id === editingId;
-    const isDragOver = ch.id === dragOverId;
+    const isDragSource = ch.id === dragSourceId;
+
+    const isDropTarget = dropInfo?.targetId === ch.id;
+    const dropPosition = isDropTarget ? dropInfo.position : null;
 
     return (
-      <div key={ch.id}>
+      <div key={ch.id} style={{ transition: 'transform 0.2s ease' }}>
         <div
           style={{
             ...styles.node,
             paddingLeft: 6 + depth * 16,
             ...(isSelected ? styles.nodeSelected : {}),
-            ...(isDragOver ? { borderTop: '2px solid var(--color-accent)' } : {}),
+            ...(isDragSource ? { opacity: 0.4 } : {}),
+            ...(isDropTarget && dropPosition === 'inside' ? styles.dropInside : {}),
           }}
           draggable
           onDragStart={(e) => handleDragStart(e, ch.id)}
-          onDragOver={(e) => { e.preventDefault(); setDragOverId(ch.id); }}
-          onDragLeave={() => setDragOverId(null)}
+          onDragOver={(e) => handleDragOver(e, ch.id)}
+          onDragLeave={handleDragLeave}
+          onDragEnd={handleDragEnd}
           onDrop={(e) => handleDrop(e, ch.id)}
           onClick={() => onSelectChapter?.(ch.id)}
           onDoubleClick={() => setEditingId(ch.id)}
           onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, chapterId: ch.id }); }}
         >
+          {/* Drop indicator lines */}
+          {isDropTarget && dropPosition === 'before' && <div style={styles.dropLineBefore} />}
+          {isDropTarget && dropPosition === 'after' && <div style={styles.dropLineAfter} />}
+
           <button
             style={{ ...styles.toggle, visibility: hasChildren ? 'visible' : 'hidden' }}
             onClick={(e) => { e.stopPropagation(); toggleCollapse(ch.id); }}

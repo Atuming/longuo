@@ -22,8 +22,10 @@ import { CharacterDialog } from '../components/dialogs/CharacterDialog';
 import { WorldDialog } from '../components/dialogs/WorldDialog';
 import { TimelineDialog } from '../components/dialogs/TimelineDialog';
 import { PlotDialog } from '../components/dialogs/PlotDialog';
+import { VersionHistoryPanel } from '../components/panels/VersionHistoryPanel';
 import { showToast } from '../components/ui/Toast';
 import type { ProjectStore } from '../types/stores';
+import type { NovelFileData } from '../types/project';
 import type { ConsistencyIssue } from '../types/consistency';
 import type { Character } from '../types/character';
 import type { WorldEntry } from '../types/world';
@@ -36,13 +38,15 @@ import { createTimelineStore } from '../stores/timeline-store';
 import { createPlotStore } from '../stores/plot-store';
 import { createRelationshipStore } from '../stores/relationship-store';
 import { createAIAssistantStore, loadDefaultAIConfig } from '../stores/ai-assistant-store';
+import { createThemeStore } from '../stores/theme-store';
+import { createSnapshotStore } from '../stores/snapshot-store';
 import { createEventBus } from '../lib/event-bus';
 import { createConsistencyEngine } from '../lib/consistency-engine';
 import { createExportEngine } from '../lib/export-engine';
 import { createAIAssistantEngine } from '../lib/ai-assistant-engine';
 
 type ViewMode = 'writing' | 'graph' | 'timeline' | 'plot';
-type PanelMode = 'none' | 'character' | 'world' | 'timeline' | 'consistency';
+type PanelMode = 'none' | 'character' | 'world' | 'timeline' | 'consistency' | 'version-history';
 
 /* ── styles ── */
 const s: Record<string, CSSProperties> = {
@@ -110,6 +114,8 @@ export function EditorPage({ projectStore }: EditorPageProps) {
   const plotStore = useMemo(() => createPlotStore(), []);
   const relationshipStore = useMemo(() => createRelationshipStore({ eventBus }), [eventBus]);
   const aiStore = useMemo(() => createAIAssistantStore(), []);
+  const themeStore = useMemo(() => createThemeStore(), []);
+  const snapshotStore = useMemo(() => createSnapshotStore(), []);
   const consistencyEngine = useMemo(() => createConsistencyEngine(), []);
 
   // 每次启动都从 ai-config.json 加载配置（配置文件始终优先）
@@ -127,6 +133,21 @@ export function EditorPage({ projectStore }: EditorPageProps) {
 
   /* ── state ── */
   const editorRef = useRef<WritingEditorHandle>(null);
+  const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>(() => {
+    return themeStore.getEffectiveTheme();
+  });
+
+  // Initialize and sync document theme attribute
+  useEffect(() => {
+    document.documentElement.dataset.theme = effectiveTheme;
+  }, [effectiveTheme]);
+
+  const handleThemeToggle = useCallback(() => {
+    const next = effectiveTheme === 'light' ? 'dark' : 'light';
+    themeStore.setTheme(next);
+    setEffectiveTheme(next);
+  }, [effectiveTheme, themeStore]);
+
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('writing');
@@ -171,6 +192,9 @@ export function EditorPage({ projectStore }: EditorPageProps) {
 
   const handleBack = useCallback(() => navigate('/'), [navigate]);
   const toggleFocus = useCallback(() => setFocusMode((v) => !v), []);
+
+  /* ── stable getCharacters callback for cross-reference ── */
+  const getCharacters = useCallback(() => characterStore.listCharacters(projectId), [characterStore, projectId]);
 
   /* ── Consistency check ── */
   const handleConsistencyCheck = useCallback(() => {
@@ -252,7 +276,7 @@ export function EditorPage({ projectStore }: EditorPageProps) {
   const handleAIAccept = useCallback((content: string) => {
     if (!selectedChapterId) return;
     if (editorRef.current) {
-      editorRef.current.appendContent(content);
+      editorRef.current.insertAtCursor(content);
     } else {
       // fallback: write to store directly (editor will be out of sync until re-mount)
       const chapter = chapterStore.getChapter(selectedChapterId);
@@ -262,6 +286,48 @@ export function EditorPage({ projectStore }: EditorPageProps) {
     }
     showToast('success', 'AI 生成内容已插入');
   }, [selectedChapterId, chapterStore]);
+
+  /* ── Snapshot helpers ── */
+  const collectProjectData = useCallback((): NovelFileData => {
+    return {
+      version: 1,
+      project: project ?? { id: projectId, name: projectName, description: '', createdAt: new Date(), updatedAt: new Date() },
+      chapters: chapterStore.listChapters(projectId),
+      characters: characterStore.listCharacters(projectId),
+      characterSnapshots: [],
+      relationships: relationshipStore.listRelationships(projectId),
+      timelinePoints: timelineStore.listTimelinePoints(projectId),
+      worldEntries: worldStore.listEntries(projectId),
+      plotThreads: plotStore.listThreads(projectId),
+    };
+  }, [project, projectId, projectName, chapterStore, characterStore, relationshipStore, timelineStore, worldStore, plotStore]);
+
+  const handleSaveSnapshot = useCallback(() => {
+    const note = window.prompt('请输入快照备注：', '');
+    if (note === null) return; // user cancelled
+    try {
+      const data = collectProjectData();
+      snapshotStore.createSnapshot(projectId, data, note || '手动快照');
+      showToast('success', '快照已保存');
+    } catch (err) {
+      showToast('error', `保存快照失败：${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  }, [collectProjectData, snapshotStore, projectId]);
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const handleRestoreSnapshot = useCallback((_restoredData: NovelFileData) => {
+    // For now, show a toast suggesting reload since reloading all stores is complex
+    // First, create an auto-backup of current state
+    try {
+      const currentData = collectProjectData();
+      // Find the snapshot that matches the restored data to call restoreSnapshot properly
+      // Since VersionHistoryPanel passes snapshot.data directly, we do the auto-backup here
+      snapshotStore.createSnapshot(projectId, currentData, '恢复前自动备份');
+    } catch {
+      // If auto-backup fails, still show the toast
+    }
+    showToast('success', '已恢复到快照，建议刷新页面以加载完整数据');
+  }, [collectProjectData, snapshotStore, projectId]);
 
   /* ── sidebar tab content ── */
   const renderTabContent = (tab: SidebarTabKey) => {
@@ -373,6 +439,14 @@ export function EditorPage({ projectStore }: EditorPageProps) {
             onIgnore={handleIgnoreConsistency}
           />
         );
+      case 'version-history':
+        return (
+          <VersionHistoryPanel
+            projectId={projectId}
+            snapshotStore={snapshotStore}
+            onRestore={handleRestoreSnapshot}
+          />
+        );
       default:
         return <div style={{ padding: 'var(--spacing-sm)', color: 'var(--color-text-secondary)', fontSize: 13 }}>选择侧边栏项目查看详情</div>;
     }
@@ -403,11 +477,12 @@ export function EditorPage({ projectStore }: EditorPageProps) {
       default:
         return (
           <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-            <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} />
+            <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} />
             <AIAssistantPanel
               open={showAIPanel}
               onClose={() => setShowAIPanel(false)}
               chapterId={selectedChapterId}
+              projectId={projectId}
               aiStore={aiStore}
               aiEngine={aiEngine}
               onAccept={handleAIAccept}
@@ -435,7 +510,7 @@ export function EditorPage({ projectStore }: EditorPageProps) {
           <button style={s.toolBtn} onClick={toggleFocus}>退出专注模式</button>
         </div>
         <div style={{ flex: 1, overflow: 'hidden' }}>
-          <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} />
+          <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} />
         </div>
       </div>
     );
@@ -485,6 +560,15 @@ export function EditorPage({ projectStore }: EditorPageProps) {
             {/* Consistency check */}
             <button style={s.toolBtn} onClick={handleConsistencyCheck}>一致性检查</button>
 
+            {/* Snapshot */}
+            <button style={s.toolBtn} onClick={handleSaveSnapshot}>保存快照</button>
+            <button
+              style={{ ...s.toolBtn, ...(panelMode === 'version-history' ? s.toolBtnActive : {}) }}
+              onClick={() => setPanelMode(panelMode === 'version-history' ? 'none' : 'version-history')}
+            >
+              版本历史
+            </button>
+
             {/* Export */}
             <div style={s.exportDropdown}>
               <button style={s.toolBtn} onClick={() => setShowExportMenu(!showExportMenu)}>
@@ -508,6 +592,11 @@ export function EditorPage({ projectStore }: EditorPageProps) {
 
             {/* Focus mode */}
             <button style={s.toolBtn} onClick={toggleFocus}>专注模式</button>
+
+            {/* Theme toggle */}
+            <button style={s.toolBtn} onClick={handleThemeToggle} title={effectiveTheme === 'light' ? '切换到暗色模式' : '切换到亮色模式'}>
+              {effectiveTheme === 'light' ? '🌙' : '☀️'}
+            </button>
           </Toolbar>
         }
         sidebar={

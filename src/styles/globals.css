@@ -40,6 +40,21 @@
   --toolbar-height: 50px;
 }
 
+/* ===== 暗色模式 CSS 变量覆盖 ===== */
+[data-theme="dark"] {
+  --color-primary: #E2E8F0;
+  --color-accent: #63B3ED;
+  --color-bg: #1A202C;
+  --color-card: #2D3748;
+  --color-text: #E2E8F0;
+  --color-text-secondary: #A0AEC0;
+  --color-border: #4A5568;
+  --color-error: #FC8181;
+  --color-success: #68D391;
+  --color-warning: #F6AD55;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
 /* ===== 全局重置 ===== */
 *, *::before, *::after {
   box-sizing: border-box;

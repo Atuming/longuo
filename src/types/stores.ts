@@ -5,7 +5,7 @@ import type { CharacterRelationship } from './relationship';
 import type { TimelinePoint } from './timeline';
 import type { WorldEntry, CustomWorldCategory } from './world';
 import type { PlotThread } from './plot';
-import type { AIConfig, AIProvider, PromptTemplate } from './ai';
+import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord } from './ai';
 
 /** 项目 Store */
 export interface ProjectStore {
@@ -109,4 +109,10 @@ export interface AIAssistantStore {
   deleteTemplate(id: string): void;
   setActiveTemplate(id: string): void;
   getActiveTemplate(): PromptTemplate;
+
+  // AI 历史记录方法
+  addHistoryRecord(projectId: string, record: Omit<AIHistoryRecord, 'id' | 'timestamp'>): AIHistoryRecord;
+  listHistory(projectId: string): AIHistoryRecord[];
+  getHistoryRecord(projectId: string, id: string): AIHistoryRecord | undefined;
+  clearHistory(projectId: string): void;
 }

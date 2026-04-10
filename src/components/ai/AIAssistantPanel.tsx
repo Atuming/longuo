@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, type CSSProperties } from 'react';
+import { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react';
 import type { AIAssistantStore } from '../../types/stores';
 import type { AIAssistantEngine } from '../../types/engines';
+import type { AIHistoryRecord } from '../../types/ai';
 import { Button } from '../ui/Button';
-import { TextArea } from '../ui/TextArea';
 
 const s: Record<string, CSSProperties> = {
   overlay: {
@@ -11,7 +11,7 @@ const s: Record<string, CSSProperties> = {
     zIndex: 500,
   },
   panel: {
-    width: '50%', minWidth: 480, maxWidth: 720, background: 'white',
+    width: '50%', minWidth: 480, maxWidth: 720, background: 'var(--color-card, white)',
     boxShadow: '-4px 0 20px rgba(0,0,0,0.15)', display: 'flex',
     flexDirection: 'column', height: '100%',
   },
@@ -28,7 +28,7 @@ const s: Record<string, CSSProperties> = {
   inputArea: { minHeight: 60 },
   submitRow: { display: 'flex', justifyContent: 'flex-end' },
   resultArea: {
-    background: 'white', border: '1px solid var(--color-border)',
+    background: 'var(--color-card, white)', border: '1px solid var(--color-border)',
     borderRadius: 'var(--radius)', padding: 12, maxHeight: 'none',
     overflowY: 'auto', fontSize: 14, lineHeight: '1.6',
     color: 'var(--color-text)', whiteSpace: 'pre-wrap', flex: 1, minHeight: 200,
@@ -51,6 +51,53 @@ const s: Record<string, CSSProperties> = {
   loading: {
     display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
     color: 'var(--color-text-secondary)', padding: 8,
+  },
+  // History section styles
+  historySection: {
+    borderTop: '1px solid var(--color-border)', marginTop: 4,
+  },
+  historyToggle: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '8px 0', cursor: 'pointer', background: 'none', border: 'none',
+    width: '100%', fontSize: 13, fontWeight: 600, color: 'var(--color-text)',
+  },
+  historyList: {
+    display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 300,
+    overflowY: 'auto',
+  },
+  historyItem: {
+    display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px',
+    borderRadius: 'var(--radius)', border: '1px solid var(--color-border)',
+    cursor: 'pointer', fontSize: 12, transition: 'background 0.15s',
+    background: 'var(--color-bg, #fafafa)',
+  },
+  historyItemHeader: {
+    display: 'flex', alignItems: 'center', gap: 6,
+  },
+  historySkillBadge: {
+    display: 'inline-block', padding: '1px 6px', borderRadius: 10,
+    fontSize: 11, background: 'var(--color-accent, #3182CE)', color: '#fff',
+    whiteSpace: 'nowrap',
+  },
+  historyTime: {
+    fontSize: 11, color: 'var(--color-text-secondary)',
+  },
+  historySummary: {
+    fontSize: 12, color: 'var(--color-text)', overflow: 'hidden',
+    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  historyExpanded: {
+    background: 'var(--color-card, white)', border: '1px solid var(--color-border)',
+    borderRadius: 'var(--radius)', padding: 10, fontSize: 13,
+    lineHeight: '1.6', whiteSpace: 'pre-wrap', color: 'var(--color-text)',
+    maxHeight: 200, overflowY: 'auto',
+  },
+  historyActions: {
+    display: 'flex', gap: 6, marginTop: 4,
+  },
+  historyEmpty: {
+    fontSize: 12, color: 'var(--color-text-secondary)', textAlign: 'center',
+    padding: '8px 0',
   },
 };
 
@@ -112,10 +159,22 @@ const WRITING_SKILLS = [
   },
 ];
 
+/** Format ISO timestamp to a readable string */
+function formatTime(isoStr: string): string {
+  try {
+    const d = new Date(isoStr);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch {
+    return isoStr;
+  }
+}
+
 interface AIAssistantPanelProps {
   open: boolean;
   onClose: () => void;
   chapterId: string | null;
+  projectId: string;
   aiStore: AIAssistantStore;
   aiEngine: AIAssistantEngine;
   onAccept?: (content: string) => void;
@@ -123,14 +182,20 @@ interface AIAssistantPanelProps {
 }
 
 export function AIAssistantPanel({
-  open, onClose, chapterId, aiStore, aiEngine, onAccept, onOpenSettings,
+  open, onClose, chapterId, projectId, aiStore, aiEngine, onAccept, onOpenSettings,
 }: AIAssistantPanelProps) {
   const [input, setInput] = useState('');
   const [result, setResult] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedSkillLabel, setSelectedSkillLabel] = useState<string>('自定义');
   const resultRef = useRef('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // History state
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRecords, setHistoryRecords] = useState<AIHistoryRecord[]>([]);
+  const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
 
   // Auto-resize textarea when input changes (e.g. from skill button)
   useEffect(() => {
@@ -141,12 +206,27 @@ export function AIAssistantPanel({
     }
   }, [input]);
 
+  // Refresh history when panel opens or history section is toggled open
+  const refreshHistory = useCallback(() => {
+    if (projectId) {
+      setHistoryRecords(aiStore.listHistory(projectId));
+    }
+  }, [aiStore, projectId]);
+
   useEffect(() => {
     if (open) {
       setResult('');
       setError(null);
+      setExpandedRecordId(null);
+      refreshHistory();
     }
-  }, [open]);
+  }, [open, refreshHistory]);
+
+  useEffect(() => {
+    if (historyOpen) {
+      refreshHistory();
+    }
+  }, [historyOpen, refreshHistory]);
 
   if (!open) return null;
 
@@ -154,12 +234,15 @@ export function AIAssistantPanel({
   const modelName = provider?.modelName ?? '未配置';
   const isConfigured = !!provider;
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (overrideInput?: string, overrideSkillLabel?: string) => {
+    const effectiveInput = overrideInput ?? input;
+    const effectiveSkillLabel = overrideSkillLabel ?? selectedSkillLabel;
+
     if (!chapterId) {
       setError('请先在左侧大纲中选择一个章节');
       return;
     }
-    if (!input.trim()) {
+    if (!effectiveInput.trim()) {
       setError('请输入写作指令或选择一个写作技能');
       return;
     }
@@ -170,7 +253,7 @@ export function AIAssistantPanel({
 
     try {
       const res = await aiEngine.generate(
-        { userInput: input, chapterId },
+        { userInput: effectiveInput, chapterId },
         (chunk: string) => {
           resultRef.current += chunk;
           setResult(resultRef.current);
@@ -178,12 +261,24 @@ export function AIAssistantPanel({
       );
       if (!res.success) {
         setError(res.error ?? '生成失败');
-        // Keep partial content if any
         if (resultRef.current) {
           setResult(resultRef.current);
         }
-      } else if (res.content && !resultRef.current) {
-        setResult(res.content);
+      } else {
+        const finalContent = resultRef.current || res.content || '';
+        if (res.content && !resultRef.current) {
+          setResult(res.content);
+        }
+        // Save history record on successful generation
+        if (finalContent && projectId) {
+          aiStore.addHistoryRecord(projectId, {
+            projectId,
+            skillLabel: effectiveSkillLabel,
+            userInput: effectiveInput,
+            generatedContent: finalContent,
+          });
+          refreshHistory();
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
@@ -209,6 +304,16 @@ export function AIAssistantPanel({
     handleGenerate();
   };
 
+  const handleHistoryInsert = (content: string) => {
+    onAccept?.(content);
+  };
+
+  const handleHistoryRegenerate = (record: AIHistoryRecord) => {
+    setInput(record.userInput);
+    setSelectedSkillLabel(record.skillLabel);
+    handleGenerate(record.userInput, record.skillLabel);
+  };
+
   return (
     <div style={s.overlay} onClick={onClose}>
       <div style={s.panel} onClick={(e) => e.stopPropagation()}>
@@ -232,13 +337,13 @@ export function AIAssistantPanel({
                     key={skill.label}
                     style={{
                       height: 30, padding: '0 10px', fontSize: 12, borderRadius: 'var(--radius)',
-                      border: '1px solid var(--color-border)', background: '#fff',
+                      border: '1px solid var(--color-border)', background: 'var(--color-card, #fff)',
                       cursor: isGenerating ? 'not-allowed' : 'pointer',
                       color: 'var(--color-text)', transition: 'all 0.15s',
                       opacity: isGenerating ? 0.5 : 1,
                     }}
                     disabled={isGenerating}
-                    onClick={() => { setInput(skill.prompt); }}
+                    onClick={() => { setInput(skill.prompt); setSelectedSkillLabel(skill.label); }}
                   >
                     {skill.label}
                   </button>
@@ -247,20 +352,21 @@ export function AIAssistantPanel({
               <textarea
                 ref={inputRef}
                 value={input}
-                onChange={(e) => setInput(e.currentTarget.value)}
+                onChange={(e) => { setInput(e.currentTarget.value); setSelectedSkillLabel('自定义'); }}
                 placeholder="输入你的想法、草稿或写作指令..."
                 style={{
                   ...s.inputArea, overflow: 'auto', resize: 'none',
                   borderRadius: 'var(--radius)', border: '1px solid var(--color-border)',
                   padding: '8px 12px', fontSize: 14, width: '100%', fontFamily: 'var(--font-family)',
                   outline: 'none', boxSizing: 'border-box',
+                  background: 'var(--color-card, white)', color: 'var(--color-text)',
                 }}
                 disabled={isGenerating}
               />
               <div style={s.submitRow}>
                 <Button
                   variant="primary"
-                  onClick={handleGenerate}
+                  onClick={() => handleGenerate()}
                   disabled={isGenerating}
                   style={{ height: 32, fontSize: 13 }}
                 >
@@ -303,6 +409,61 @@ export function AIAssistantPanel({
                   </div>
                 </>
               )}
+
+              {/* History section */}
+              <div style={s.historySection}>
+                <button
+                  style={s.historyToggle}
+                  onClick={() => setHistoryOpen((v) => !v)}
+                >
+                  <span>📋 历史记录 ({historyRecords.length})</span>
+                  <span style={{ fontSize: 11 }}>{historyOpen ? '▲ 收起' : '▼ 展开'}</span>
+                </button>
+                {historyOpen && (
+                  <div style={s.historyList as CSSProperties}>
+                    {historyRecords.length === 0 ? (
+                      <div style={s.historyEmpty as CSSProperties}>暂无历史记录</div>
+                    ) : (
+                      historyRecords.map((record) => {
+                        const isExpanded = expandedRecordId === record.id;
+                        return (
+                          <div
+                            key={record.id}
+                            style={s.historyItem}
+                            onClick={() => setExpandedRecordId(isExpanded ? null : record.id)}
+                          >
+                            <div style={s.historyItemHeader}>
+                              <span style={s.historySkillBadge}>{record.skillLabel}</span>
+                              <span style={s.historyTime}>{formatTime(record.timestamp)}</span>
+                            </div>
+                            {!isExpanded && (
+                              <div style={s.historySummary}>
+                                {record.generatedContent.slice(0, 50)}{record.generatedContent.length > 50 ? '...' : ''}
+                              </div>
+                            )}
+                            {isExpanded && (
+                              <>
+                                <div style={s.historyExpanded}>{record.generatedContent}</div>
+                                <div style={s.historyActions} onClick={(e) => e.stopPropagation()}>
+                                  <Button variant="primary" onClick={() => handleHistoryInsert(record.generatedContent)}
+                                    style={{ height: 26, fontSize: 11, padding: '0 10px' }}>
+                                    插入到编辑器
+                                  </Button>
+                                  <Button variant="secondary" onClick={() => handleHistoryRegenerate(record)}
+                                    style={{ height: 26, fontSize: 11, padding: '0 10px' }}
+                                    disabled={isGenerating}>
+                                    重新生成
+                                  </Button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>

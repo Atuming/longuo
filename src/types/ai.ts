@@ -48,3 +48,13 @@ export interface AIGenerateResult {
   content?: string;
   error?: string;
 }
+
+/** AI 历史记录 */
+export interface AIHistoryRecord {
+  id: string;
+  projectId: string;
+  timestamp: string;           // ISO 8601
+  skillLabel: string;
+  userInput: string;
+  generatedContent: string;
+}
