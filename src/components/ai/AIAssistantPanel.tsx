@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import type { AIAssistantStore } from '../../types/stores';
 import type { AIAssistantEngine } from '../../types/engines';
-import type { AIHistoryRecord } from '../../types/ai';
+import type { AIHistoryRecord, WritingSkill, ScoredSkill } from '../../types/ai';
+import { useEditorStores } from '../../pages/editor/EditorStoreContext';
 import { Button } from '../ui/Button';
 
 const s: Record<string, CSSProperties> = {
@@ -52,6 +53,35 @@ const s: Record<string, CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
     color: 'var(--color-text-secondary)', padding: 8,
   },
+  // Skill recommendation dot
+  skillBtnRecommended: {
+    boxShadow: '0 0 0 2px var(--color-accent, #3182CE)',
+  },
+  // Param form styles
+  paramForm: {
+    display: 'flex', flexDirection: 'column', gap: 8,
+    padding: '10px 12px', borderRadius: 'var(--radius)',
+    border: '1px solid var(--color-border)', background: 'var(--color-bg, #fafafa)',
+  },
+  paramFormHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    fontSize: 13, fontWeight: 600, color: 'var(--color-text)',
+  },
+  paramField: {
+    display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
+  },
+  paramLabel: {
+    minWidth: 60, color: 'var(--color-text-secondary)', fontSize: 12,
+  },
+  paramInput: {
+    flex: 1, height: 28, padding: '0 8px', fontSize: 13,
+    borderRadius: 'var(--radius)', border: '1px solid var(--color-border)',
+    background: 'var(--color-card, white)', color: 'var(--color-text)',
+    outline: 'none', boxSizing: 'border-box' as const,
+  },
+  paramActions: {
+    display: 'flex', gap: 6, justifyContent: 'flex-end',
+  },
   // History section styles
   historySection: {
     borderTop: '1px solid var(--color-border)', marginTop: 4,
@@ -101,64 +131,6 @@ const s: Record<string, CSSProperties> = {
   },
 };
 
-const WRITING_SKILLS = [
-  {
-    label: '✍️ 续写',
-    prompt: '请根据当前章节的最后几段内容，保持一致的叙事视角、文风和节奏，自然地续写下去。' +
-      '注意：1）延续当前的情节走向和情绪基调；2）如果有对话正在进行，继续对话并推进剧情；' +
-      '3）保持与已出场角色的性格一致性；4）适当穿插环境描写和心理活动；5）约400-600字。',
-  },
-  {
-    label: '💎 润色',
-    prompt: '请对当前章节内容进行深度润色。要求：' +
-      '1）优化句式结构，消除口语化和重复表达；2）增强五感描写（视觉、听觉、触觉、嗅觉、味觉）；' +
-      '3）用更精准的动词和形容词替换平淡用词；4）调整段落节奏，长短句交替；' +
-      '5）保持原有情节和人物性格不变，只提升文学表现力。请输出润色后的完整段落。',
-  },
-  {
-    label: '💬 对话',
-    prompt: '请根据当前场景和在场角色，生成一段高质量的角色对话。要求：' +
-      '1）每个角色的语气、用词、说话习惯要符合其性格设定；2）对话要推动剧情发展或揭示角色关系；' +
-      '3）穿插适当的动作描写、表情描写和心理活动（不要纯对话）；4）对话节奏有张有弛，避免一问一答的机械感；' +
-      '5）如有冲突或悬念，通过对话自然展现。约300-500字。',
-  },
-  {
-    label: '🏞️ 场景',
-    prompt: '请根据当前章节的背景设定和世界观，写一段沉浸式的场景描写。要求：' +
-      '1）综合运用视觉、听觉、嗅觉、触觉等多感官描写；2）场景氛围要与当前情节的情绪基调一致；' +
-      '3）通过环境细节暗示时间、天气、季节等信息；4）将场景描写与角色的情绪或行动自然融合，避免静态罗列；' +
-      '5）如涉及世界观特有元素（魔法、科技等），要体现设定特色。约200-400字。',
-  },
-  {
-    label: '📝 扩写',
-    prompt: '请将当前章节内容进行扩写，使其更加丰满立体。要求：' +
-      '1）补充角色的内心独白和情感变化；2）增加环境氛围和感官细节；3）展开被一笔带过的动作和过程；' +
-      '4）添加角色之间的微表情和肢体语言；5）如有伏笔或暗示，适当强化但不要太明显；' +
-      '6）扩写后的内容应是原文的1.5-2倍长度，保持情节走向不变。',
-  },
-  {
-    label: '🔄 改写',
-    prompt: '请用不同的叙述方式改写当前章节内容。要求：' +
-      '1）可以尝试切换叙事视角（如从第三人称改为第一人称，或从旁观者视角改为某角色视角）；' +
-      '2）调整叙事节奏（如将平铺直叙改为倒叙或插叙）；3）保持核心情节和角色关系不变；' +
-      '4）用全新的比喻和意象替换原有描写；5）改写后的文字应有明显不同的阅读体验。',
-  },
-  {
-    label: '🎭 冲突',
-    prompt: '请根据当前章节的角色关系和情节走向，设计并写出一段戏剧冲突。要求：' +
-      '1）冲突要有合理的起因，符合角色动机和性格；2）通过对话、行动和心理描写层层升级紧张感；' +
-      '3）冲突中要展现角色的不同立场和价值观；4）留下悬念或转折，不要在这一段内完全解决冲突；' +
-      '5）约400-600字。',
-  },
-  {
-    label: '💭 内心',
-    prompt: '请为当前场景中的主要角色写一段深入的内心独白。要求：' +
-      '1）展现角色此刻的真实想法和情感波动；2）通过内心活动揭示角色的动机、恐惧或欲望；' +
-      '3）可以穿插回忆片段或联想；4）内心独白的语言风格要符合角色的教育背景和性格特点；' +
-      '5）与外在表现形成对比或呼应，增加角色的层次感。约200-400字。',
-  },
-];
-
 /** Format ISO timestamp to a readable string */
 function formatTime(isoStr: string): string {
   try {
@@ -168,6 +140,66 @@ function formatTime(isoStr: string): string {
   } catch {
     return isoStr;
   }
+}
+
+/** Build score map from ScoredSkill array */
+function buildScoreMap(scored: ScoredSkill[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const s of scored) {
+    map.set(s.skill.id, s.score);
+  }
+  return map;
+}
+
+/** Render a param form control for a single skill parameter */
+function ParamControl({
+  param,
+  value,
+  onChange,
+  characters,
+}: {
+  param: WritingSkill['parameters'][number];
+  value: string;
+  onChange: (v: string) => void;
+  characters: { id: string; name: string }[];
+}) {
+  if (param.type === 'select' && param.source === 'characters') {
+    return (
+      <select
+        style={s.paramInput}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{param.placeholder || '请选择...'}</option>
+        {characters.map((c) => (
+          <option key={c.id} value={c.name}>{c.name}</option>
+        ))}
+      </select>
+    );
+  }
+  if (param.type === 'select' && param.options) {
+    return (
+      <select
+        style={s.paramInput}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{param.placeholder || '请选择...'}</option>
+        {param.options.map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <input
+      type={param.type === 'number' ? 'number' : 'text'}
+      style={s.paramInput}
+      value={value}
+      placeholder={param.placeholder || ''}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
 }
 
 interface AIAssistantPanelProps {
@@ -184,6 +216,8 @@ interface AIAssistantPanelProps {
 export function AIAssistantPanel({
   open, onClose, chapterId, projectId, aiStore, aiEngine, onAccept, onOpenSettings,
 }: AIAssistantPanelProps) {
+  const { characterStore } = useEditorStores();
+
   const [input, setInput] = useState('');
   const [result, setResult] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -192,10 +226,32 @@ export function AIAssistantPanel({
   const resultRef = useRef('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // Skill state
+  const [skills, setSkills] = useState<WritingSkill[]>([]);
+  const [scoreMap, setScoreMap] = useState<Map<string, number>>(new Map());
+  const [activeParamSkill, setActiveParamSkill] = useState<WritingSkill | null>(null);
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+
   // History state
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<AIHistoryRecord[]>([]);
   const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
+
+  // Characters for parameter source
+  const characters = useMemo(() => {
+    if (!projectId) return [];
+    return characterStore.listCharacters(projectId).map((c) => ({ id: c.id, name: c.name }));
+  }, [characterStore, projectId, open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load skills and compute recommendations
+  const refreshSkills = useCallback(() => {
+    const loaded = aiStore.listSkills();
+    setSkills(loaded);
+    if (chapterId) {
+      const scored = aiEngine.recommendSkills(chapterId, loaded);
+      setScoreMap(buildScoreMap(scored));
+    }
+  }, [aiStore, aiEngine, chapterId]);
 
   // Auto-resize textarea when input changes (e.g. from skill button)
   useEffect(() => {
@@ -218,9 +274,12 @@ export function AIAssistantPanel({
       setResult('');
       setError(null);
       setExpandedRecordId(null);
+      setActiveParamSkill(null);
+      setParamValues({});
       refreshHistory();
+      refreshSkills();
     }
-  }, [open, refreshHistory]);
+  }, [open, refreshHistory, refreshSkills]);
 
   useEffect(() => {
     if (historyOpen) {
@@ -228,11 +287,50 @@ export function AIAssistantPanel({
     }
   }, [historyOpen, refreshHistory]);
 
+  // Re-compute recommendations when chapter changes
+  useEffect(() => {
+    if (open && chapterId && skills.length > 0) {
+      const scored = aiEngine.recommendSkills(chapterId, skills);
+      setScoreMap(buildScoreMap(scored));
+    }
+  }, [open, chapterId, skills, aiEngine]);
+
   if (!open) return null;
 
   const provider = aiStore.getActiveProvider();
   const modelName = provider?.modelName ?? '未配置';
   const isConfigured = !!provider;
+
+  const handleSkillClick = (skill: WritingSkill) => {
+    if (skill.parameters.length > 0) {
+      // Show param form
+      setActiveParamSkill(skill);
+      const defaults: Record<string, string> = {};
+      for (const p of skill.parameters) {
+        defaults[p.key] = p.defaultValue ?? '';
+      }
+      setParamValues(defaults);
+    } else {
+      // No params — fill textarea directly
+      setInput(skill.promptTemplate);
+      setSelectedSkillLabel(`${skill.icon} ${skill.name}`);
+      setActiveParamSkill(null);
+    }
+  };
+
+  const handleParamConfirm = () => {
+    if (!activeParamSkill) return;
+    const resolved = aiEngine.resolveSkillPrompt(activeParamSkill, paramValues);
+    setInput(resolved);
+    setSelectedSkillLabel(`${activeParamSkill.icon} ${activeParamSkill.name}`);
+    setActiveParamSkill(null);
+    setParamValues({});
+  };
+
+  const handleParamCancel = () => {
+    setActiveParamSkill(null);
+    setParamValues({});
+  };
 
   const handleGenerate = async (overrideInput?: string, overrideSkillLabel?: string) => {
     const effectiveInput = overrideInput ?? input;
@@ -259,6 +357,9 @@ export function AIAssistantPanel({
           setResult(resultRef.current);
         },
       );
+      if (res.cancelled) {
+        return;
+      }
       if (!res.success) {
         setError(res.error ?? '生成失败');
         if (resultRef.current) {
@@ -284,6 +385,21 @@ export function AIAssistantPanel({
       setError(err instanceof Error ? err.message : '未知错误');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleClose = () => {
+    if (isGenerating) {
+      aiEngine.abort();
+    }
+    onClose();
+  };
+
+  const handleCancel = () => {
+    aiEngine.abort();
+    setIsGenerating(false);
+    if (!resultRef.current) {
+      setError('已取消生成');
     }
   };
 
@@ -314,12 +430,14 @@ export function AIAssistantPanel({
     handleGenerate(record.userInput, record.skillLabel);
   };
 
+  const enabledSkills = skills.filter((sk) => sk.enabled);
+
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay} onClick={handleClose}>
       <div style={s.panel} onClick={(e) => e.stopPropagation()}>
         <div style={s.header}>
           <span style={s.title}>AI 辅助写作</span>
-          <button style={s.closeBtn} onClick={onClose}>×</button>
+          <button style={s.closeBtn} onClick={handleClose}>×</button>
         </div>
 
         <div style={s.body}>
@@ -331,24 +449,69 @@ export function AIAssistantPanel({
             </div>
           ) : (
             <>
+              {/* Skill buttons */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {WRITING_SKILLS.map((skill) => (
-                  <button
-                    key={skill.label}
-                    style={{
-                      height: 30, padding: '0 10px', fontSize: 12, borderRadius: 'var(--radius)',
-                      border: '1px solid var(--color-border)', background: 'var(--color-card, #fff)',
-                      cursor: isGenerating ? 'not-allowed' : 'pointer',
-                      color: 'var(--color-text)', transition: 'all 0.15s',
-                      opacity: isGenerating ? 0.5 : 1,
-                    }}
-                    disabled={isGenerating}
-                    onClick={() => { setInput(skill.prompt); setSelectedSkillLabel(skill.label); }}
-                  >
-                    {skill.label}
-                  </button>
-                ))}
+                {enabledSkills.map((skill) => {
+                  const score = scoreMap.get(skill.id) ?? 0.5;
+                  const isRecommended = score > 0.7;
+                  return (
+                    <button
+                      key={skill.id}
+                      title={skill.description}
+                      style={{
+                        height: 30, padding: '0 10px', fontSize: 12, borderRadius: 'var(--radius)',
+                        border: '1px solid var(--color-border)', background: 'var(--color-card, #fff)',
+                        cursor: isGenerating ? 'not-allowed' : 'pointer',
+                        color: 'var(--color-text)', transition: 'all 0.15s',
+                        opacity: isGenerating ? 0.5 : 1,
+                        ...(isRecommended ? s.skillBtnRecommended : {}),
+                      }}
+                      disabled={isGenerating}
+                      onClick={() => handleSkillClick(skill)}
+                    >
+                      {skill.icon} {skill.name}
+                    </button>
+                  );
+                })}
               </div>
+
+              {/* Parameter form */}
+              {activeParamSkill && (
+                <div style={s.paramForm}>
+                  <div style={s.paramFormHeader}>
+                    <span>{activeParamSkill.icon} {activeParamSkill.name} - 参数设置</span>
+                    <button
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: 'var(--color-text-secondary)' }}
+                      onClick={handleParamCancel}
+                    >×</button>
+                  </div>
+                  {activeParamSkill.parameters.map((param) => (
+                    <div key={param.key} style={s.paramField}>
+                      <span style={s.paramLabel}>
+                        {param.label}
+                        {param.required && <span style={{ color: '#E53E3E' }}>*</span>}
+                      </span>
+                      <ParamControl
+                        param={param}
+                        value={paramValues[param.key] ?? ''}
+                        onChange={(v) => setParamValues((prev) => ({ ...prev, [param.key]: v }))}
+                        characters={characters}
+                      />
+                    </div>
+                  ))}
+                  <div style={s.paramActions}>
+                    <Button variant="secondary" onClick={handleParamCancel}
+                      style={{ height: 28, fontSize: 12 }}>
+                      取消
+                    </Button>
+                    <Button variant="primary" onClick={handleParamConfirm}
+                      style={{ height: 28, fontSize: 12 }}>
+                      确认参数
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               <textarea
                 ref={inputRef}
                 value={input}
@@ -364,14 +527,23 @@ export function AIAssistantPanel({
                 disabled={isGenerating}
               />
               <div style={s.submitRow}>
-                <Button
-                  variant="primary"
-                  onClick={() => handleGenerate()}
-                  disabled={isGenerating}
-                  style={{ height: 32, fontSize: 13 }}
-                >
-                  {isGenerating ? '生成中...' : '生成'}
-                </Button>
+                {isGenerating ? (
+                  <Button
+                    variant="secondary"
+                    onClick={handleCancel}
+                    style={{ height: 32, fontSize: 13 }}
+                  >
+                    取消
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    onClick={() => handleGenerate()}
+                    style={{ height: 32, fontSize: 13 }}
+                  >
+                    生成
+                  </Button>
+                )}
               </div>
 
               {error && (

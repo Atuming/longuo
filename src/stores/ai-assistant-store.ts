@@ -1,5 +1,6 @@
 import type { AIAssistantStore } from '../types/stores';
-import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord } from '../types/ai';
+import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill, SkillParameter, ContextHint } from '../types/ai';
+import { BUILT_IN_SKILLS } from '../types/skill-defaults';
 
 /** 内置默认中文小说写作 Prompt 模板 */
 export const DEFAULT_PROMPT_TEMPLATE: PromptTemplate = {
@@ -52,6 +53,7 @@ function cloneConfig(config: AIConfig): AIConfig {
 }
 
 const STORAGE_KEY = 'novel-assistant-ai-config';
+const SKILLS_STORAGE_KEY = 'novel-assistant-skills';
 const HISTORY_MAX_RECORDS = 50;
 
 /** Get localStorage key for AI history of a project */
@@ -96,6 +98,86 @@ function persistToLocalStorage(config: AIConfig): void {
   }
 }
 
+/** 深拷贝 SkillParameter */
+function cloneParameter(p: SkillParameter): SkillParameter {
+  return { ...p, options: p.options ? [...p.options] : undefined };
+}
+
+/** 深拷贝 ContextHint */
+function cloneHint(h: ContextHint): ContextHint {
+  return { ...h };
+}
+
+/** 深拷贝 WritingSkill */
+function cloneSkill(s: WritingSkill): WritingSkill {
+  return {
+    ...s,
+    parameters: s.parameters.map(cloneParameter),
+    contextHints: s.contextHints.map(cloneHint),
+    references: s.references?.map((r) => ({ ...r })),
+  };
+}
+
+/** 技能持久化数据结构 */
+interface PersistedSkillData {
+  customSkills: WritingSkill[];
+  builtInOverrides: Record<string, Partial<WritingSkill>>;
+}
+
+/** 从 localStorage 加载技能数据 */
+function loadSkillData(): PersistedSkillData {
+  try {
+    const raw = localStorage.getItem(SKILLS_STORAGE_KEY);
+    if (!raw) return { customSkills: [], builtInOverrides: {} };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      localStorage.removeItem(SKILLS_STORAGE_KEY);
+      return { customSkills: [], builtInOverrides: {} };
+    }
+    return {
+      customSkills: Array.isArray(parsed.customSkills) ? parsed.customSkills : [],
+      builtInOverrides: parsed.builtInOverrides && typeof parsed.builtInOverrides === 'object'
+        ? parsed.builtInOverrides
+        : {},
+    };
+  } catch {
+    try { localStorage.removeItem(SKILLS_STORAGE_KEY); } catch { /* silent */ }
+    return { customSkills: [], builtInOverrides: {} };
+  }
+}
+
+/** 保存技能数据到 localStorage */
+function saveSkillData(data: PersistedSkillData): void {
+  try {
+    localStorage.setItem(SKILLS_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // silent degradation
+  }
+}
+
+/** 将内置默认值与覆盖数据合并 */
+function mergeBuiltInSkills(
+  defaults: WritingSkill[],
+  overrides: Record<string, Partial<WritingSkill>>,
+): WritingSkill[] {
+  return defaults.map((skill) => {
+    const override = overrides[skill.id];
+    if (!override) return cloneSkill(skill);
+    return cloneSkill({
+      ...skill,
+      ...override,
+      id: skill.id,
+      builtIn: true,
+      parameters: override.parameters
+        ? override.parameters.map(cloneParameter)
+        : skill.parameters.map(cloneParameter),
+      contextHints: override.contextHints
+        ? override.contextHints.map(cloneHint)
+        : skill.contextHints.map(cloneHint),
+    });
+  });
+}
+
 /**
  * 从 public/ai-config.json 加载配置（始终作为权威数据源）
  */
@@ -119,6 +201,22 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
   const config: AIConfig = initialConfig
     ? cloneConfig(initialConfig)
     : createDefaultConfig();
+
+  // 技能状态
+  const skillData = loadSkillData();
+  const customSkills: WritingSkill[] = skillData.customSkills.map(cloneSkill);
+  const builtInOverrides: Record<string, Partial<WritingSkill>> = { ...skillData.builtInOverrides };
+  let builtInDefaults: WritingSkill[] = BUILT_IN_SKILLS;
+
+  function persistSkills(): void {
+    saveSkillData({ customSkills: customSkills.map(cloneSkill), builtInOverrides: { ...builtInOverrides } });
+  }
+
+  function getMergedSkills(): WritingSkill[] {
+    const builtIn = mergeBuiltInSkills(builtInDefaults, builtInOverrides);
+    const custom = customSkills.map(cloneSkill);
+    return [...builtIn, ...custom].sort((a, b) => a.sortOrder - b.sortOrder);
+  }
 
   return {
     getConfig(): AIConfig {
@@ -277,6 +375,94 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
       } catch {
         // silent degradation
       }
+    },
+
+    listSkills(): WritingSkill[] {
+      return getMergedSkills();
+    },
+
+    getSkill(id: string): WritingSkill | undefined {
+      const all = getMergedSkills();
+      return all.find((s) => s.id === id);
+    },
+
+    addSkill(data: Omit<WritingSkill, 'id' | 'builtIn'>): WritingSkill {
+      const maxOrder = getMergedSkills().reduce((max, s) => Math.max(max, s.sortOrder), -1);
+      const skill: WritingSkill = {
+        ...data,
+        id: crypto.randomUUID(),
+        builtIn: false,
+        sortOrder: data.sortOrder ?? maxOrder + 1,
+        parameters: data.parameters.map(cloneParameter),
+        contextHints: data.contextHints.map(cloneHint),
+      };
+      customSkills.push(skill);
+      persistSkills();
+      return cloneSkill(skill);
+    },
+
+    updateSkill(id: string, updates: Partial<Omit<WritingSkill, 'id' | 'builtIn'>>): void {
+      // 检查是否为内置技能
+      const isBuiltIn = builtInDefaults.some((s) => s.id === id);
+      if (isBuiltIn) {
+        // 存储为覆盖
+        const existing = builtInOverrides[id] ?? {};
+        const merged = { ...existing, ...updates };
+        // 深拷贝数组字段
+        if (updates.parameters) merged.parameters = updates.parameters.map(cloneParameter);
+        if (updates.contextHints) merged.contextHints = updates.contextHints.map(cloneHint);
+        builtInOverrides[id] = merged;
+      } else {
+        const skill = customSkills.find((s) => s.id === id);
+        if (!skill) return;
+        if (updates.name !== undefined) skill.name = updates.name;
+        if (updates.icon !== undefined) skill.icon = updates.icon;
+        if (updates.description !== undefined) skill.description = updates.description;
+        if (updates.promptTemplate !== undefined) skill.promptTemplate = updates.promptTemplate;
+        if (updates.parameters !== undefined) skill.parameters = updates.parameters.map(cloneParameter);
+        if (updates.contextHints !== undefined) skill.contextHints = updates.contextHints.map(cloneHint);
+        if (updates.sortOrder !== undefined) skill.sortOrder = updates.sortOrder;
+        if (updates.enabled !== undefined) skill.enabled = updates.enabled;
+      }
+      persistSkills();
+    },
+
+    deleteSkill(id: string): void {
+      const isBuiltIn = builtInDefaults.some((s) => s.id === id);
+      if (isBuiltIn) return; // 内置技能不可删除
+      const idx = customSkills.findIndex((s) => s.id === id);
+      if (idx >= 0) {
+        customSkills.splice(idx, 1);
+        persistSkills();
+      }
+    },
+
+    resetSkill(id: string): void {
+      const isBuiltIn = builtInDefaults.some((s) => s.id === id);
+      if (!isBuiltIn) return; // 仅内置技能可恢复默认
+      delete builtInOverrides[id];
+      persistSkills();
+    },
+
+    reorderSkills(orderedIds: string[]): void {
+      const all = getMergedSkills();
+      for (let i = 0; i < orderedIds.length; i++) {
+        const skill = all.find((s) => s.id === orderedIds[i]);
+        if (!skill) continue;
+        const newOrder = i;
+        if (skill.builtIn) {
+          const existing = builtInOverrides[skill.id] ?? {};
+          builtInOverrides[skill.id] = { ...existing, sortOrder: newOrder };
+        } else {
+          const custom = customSkills.find((s) => s.id === skill.id);
+          if (custom) custom.sortOrder = newOrder;
+        }
+      }
+      persistSkills();
+    },
+
+    setBuiltInSkills(skills: WritingSkill[]): void {
+      builtInDefaults = skills.map(cloneSkill);
     },
   };
 }

@@ -5,7 +5,7 @@ import type { CharacterRelationship } from './relationship';
 import type { TimelinePoint } from './timeline';
 import type { WorldEntry, CustomWorldCategory } from './world';
 import type { PlotThread } from './plot';
-import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord } from './ai';
+import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill } from './ai';
 
 /** 项目 Store */
 export interface ProjectStore {
@@ -115,4 +115,14 @@ export interface AIAssistantStore {
   listHistory(projectId: string): AIHistoryRecord[];
   getHistoryRecord(projectId: string, id: string): AIHistoryRecord | undefined;
   clearHistory(projectId: string): void;
+
+  // 技能管理
+  listSkills(): WritingSkill[];
+  getSkill(id: string): WritingSkill | undefined;
+  addSkill(data: Omit<WritingSkill, 'id' | 'builtIn'>): WritingSkill;
+  updateSkill(id: string, updates: Partial<Omit<WritingSkill, 'id' | 'builtIn'>>): void;
+  deleteSkill(id: string): void;
+  resetSkill(id: string): void;
+  reorderSkills(orderedIds: string[]): void;
+  setBuiltInSkills(skills: WritingSkill[]): void;
 }

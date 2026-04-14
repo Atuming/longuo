@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "skills": [
+    "builtin-continue",
+    "builtin-polish",
+    "builtin-dialogue",
+    "builtin-scene",
+    "builtin-expand",
+    "builtin-rewrite",
+    "builtin-conflict",
+    "builtin-inner"
+  ]
+}

@@ -1,10 +1,27 @@
-import { useMemo } from 'react';
+import React, { Suspense, useMemo } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
-import { ToastContainer } from './components/ui';
+import { ToastContainer, ErrorBoundary } from './components/ui';
 import { ProjectListPage } from './pages/ProjectListPage';
-import { EditorPage } from './pages/EditorPage';
 import { createFileManager } from './lib/file-manager';
 import { createProjectStore } from './stores/project-store';
+import type { CSSProperties } from 'react';
+
+const LazyEditorPage = React.lazy(() => import('./pages/EditorPage'));
+
+const loadingStyles: Record<string, CSSProperties> = {
+  container: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100vh',
+    color: 'var(--color-text-secondary, #666)',
+    fontSize: 16,
+  },
+};
+
+function LoadingIndicator() {
+  return <div style={loadingStyles.container}>加载中...</div>;
+}
 
 function App() {
   const projectStore = useMemo(() => {
@@ -15,10 +32,16 @@ function App() {
   return (
     <HashRouter>
       <ToastContainer />
-      <Routes>
-        <Route path="/" element={<ProjectListPage projectStore={projectStore} />} />
-        <Route path="/editor" element={<EditorPage projectStore={projectStore} />} />
-      </Routes>
+      <ErrorBoundary fallbackTitle="页面加载失败">
+        <Routes>
+          <Route path="/" element={<ProjectListPage projectStore={projectStore} />} />
+          <Route path="/editor" element={
+            <Suspense fallback={<LoadingIndicator />}>
+              <LazyEditorPage projectStore={projectStore} />
+            </Suspense>
+          } />
+        </Routes>
+      </ErrorBoundary>
     </HashRouter>
   );
 }

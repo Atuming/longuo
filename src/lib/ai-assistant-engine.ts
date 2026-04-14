@@ -12,6 +12,9 @@ import type {
   AIGenerateResult,
   AIProvider,
   PromptTemplate,
+  WritingSkill,
+  ScoredSkill,
+  ContextSignals,
 } from '../types/ai';
 
 export interface AIAssistantEngineDeps {
@@ -50,12 +53,89 @@ function summarize(content: string, maxLength = 200): string {
   return content.slice(0, maxLength) + '...';
 }
 
+/** 技能参数占位符正则：{param:key} */
+const SKILL_PARAM_RE = /\{param:(\w+)\}/g;
+
+/** 中文对话标记正则 */
+const DIALOGUE_RE = /[「」""'']/;
+
+/** 句末标点 */
+const SENTENCE_END_RE = /[。！？!?…]$/;
+
+/** 替换技能参数占位符 */
+function resolveParams(
+  template: string,
+  paramValues: Record<string, string>,
+  skill: WritingSkill,
+): string {
+  const requiredKeys = new Set(
+    skill.parameters.filter((p) => p.required).map((p) => p.key),
+  );
+
+  let result = template.replace(SKILL_PARAM_RE, (match, key: string) => {
+    const value = paramValues[key];
+    if (value && value.trim()) return value.trim();
+    // required 参数缺失时保留占位符
+    if (requiredKeys.has(key)) return match;
+    // optional 参数缺失时替换为空
+    return '';
+  });
+
+  // 清理多余空格
+  result = result.replace(/ {2,}/g, ' ').trim();
+  return result;
+}
+
+/** 分析章节上下文信号 */
+function analyzeSignals(context: PackedContext): ContextSignals {
+  const content = context.chapterContent;
+  const wordCount = content.length;
+  const hasDialogue = DIALOGUE_RE.test(content);
+
+  // isNearEnd：最后 100 个字符没有句末标点，或内容较短
+  const tail = content.slice(-100).trim();
+  const isNearEnd = tail.length > 0 && !SENTENCE_END_RE.test(tail);
+
+  const hasCharacters = context.characterInfo.length > 0;
+  const hasWorldEntries = context.worldSetting.length > 0;
+
+  return { wordCount, hasDialogue, isNearEnd, hasCharacters, hasWorldEntries };
+}
+
+/** 根据信号和条件评分 */
+function matchSignal(
+  signals: ContextSignals,
+  signal: string,
+  condition: string,
+): boolean {
+  switch (signal) {
+    case 'wordCount':
+      if (condition === 'low') return signals.wordCount < 200;
+      if (condition === 'high') return signals.wordCount > 2000;
+      return false;
+    case 'hasDialogue':
+      return condition === 'true' ? signals.hasDialogue : !signals.hasDialogue;
+    case 'isNearEnd':
+      return condition === 'true' ? signals.isNearEnd : !signals.isNearEnd;
+    case 'hasCharacters':
+      return condition === 'true' ? signals.hasCharacters : !signals.hasCharacters;
+    case 'hasWorldEntries':
+      return condition === 'true' ? signals.hasWorldEntries : !signals.hasWorldEntries;
+    default:
+      return false;
+  }
+}
+
 /**
  * 创建 AIAssistantEngine 实例。
  * 负责上下文打包、Prompt 组装、AI API 调用和配置验证。
  */
 export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistantEngine {
   const { chapterStore, characterStore, worldStore, timelineStore, aiStore } = deps;
+
+  // 并发控制状态（闭包变量）
+  let activeRequestId: string | null = null;
+  let activeController: AbortController | null = null;
 
   return {
     packContext(chapterId: string): PackedContext {
@@ -132,6 +212,14 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
       };
     },
 
+    abort(): void {
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+      activeRequestId = null;
+    },
+
     buildPrompt(
       context: PackedContext,
       userInput: string,
@@ -157,6 +245,19 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
       request: AIGenerateRequest,
       onChunk?: (chunk: string) => void,
     ): Promise<AIGenerateResult> {
+      // 1. 生成唯一请求 ID
+      const requestId = crypto.randomUUID();
+
+      // 2. 自动取消上一个活跃请求
+      if (activeController) {
+        activeController.abort();
+      }
+
+      // 3. 创建新的 AbortController，更新闭包状态
+      const controller = new AbortController();
+      activeRequestId = requestId;
+      activeController = controller;
+
       // 获取当前活跃的 provider
       const provider = aiStore.getActiveProvider();
       if (!provider) {
@@ -184,8 +285,12 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         stream: !!onChunk,
       });
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), provider.timeoutMs);
+      // 4. 超时控制合并到同一个 controller
+      const timeoutId = setTimeout(() => {
+        if (activeRequestId === requestId) {
+          controller.abort();
+        }
+      }, provider.timeoutMs);
 
       try {
         const response = await fetch(provider.apiEndpoint, {
@@ -216,6 +321,13 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
 
         // 流式响应处理
         if (onChunk && response.body) {
+          // onChunk 守卫：仅当请求仍为活跃请求时才传递 chunk
+          const guardedOnChunk = (chunk: string) => {
+            if (activeRequestId === requestId) {
+              onChunk(chunk);
+            }
+          };
+
           let fullContent = '';
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
@@ -237,7 +349,7 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
                     const chunk = parsed.choices?.[0]?.delta?.content ?? '';
                     if (chunk) {
                       fullContent += chunk;
-                      onChunk(chunk);
+                      guardedOnChunk(chunk);
                     }
                   } catch {
                     // Skip malformed JSON lines
@@ -253,6 +365,12 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
             return { success: false, error: '流式响应中断，未接收到有效内容。' };
           }
 
+          // 请求正常完成后清理闭包状态
+          if (activeRequestId === requestId) {
+            activeRequestId = null;
+            activeController = null;
+          }
+
           if (!fullContent) {
             return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
           }
@@ -262,13 +380,29 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         // 非流式响应
         const json = await response.json();
         const content = json.choices?.[0]?.message?.content ?? '';
+
+        // 请求正常完成后清理闭包状态
+        if (activeRequestId === requestId) {
+          activeRequestId = null;
+          activeController = null;
+        }
+
         if (!content) {
           return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
         }
         return { success: true, content };
       } catch (error: unknown) {
         clearTimeout(timeoutId);
+
+        // 区分取消和超时
         if (error instanceof DOMException && error.name === 'AbortError') {
+          if (activeRequestId !== requestId) {
+            // 被新请求取消，返回 cancelled 标识
+            return { success: false, cancelled: true };
+          }
+          // 超时取消，清理闭包状态
+          activeRequestId = null;
+          activeController = null;
           return { success: false, error: '请求超时，请增加超时时间或缩短输入内容后重试。' };
         }
         if (error instanceof TypeError) {
@@ -293,6 +427,55 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         errors.push('模型名称不能为空');
       }
       return { valid: errors.length === 0, errors };
+    },
+
+    resolveSkillPrompt(skill: WritingSkill, paramValues: Record<string, string>): string {
+      let result = resolveParams(skill.promptTemplate, paramValues, skill);
+
+      if (skill.references && skill.references.length > 0) {
+        const refBlock = skill.references
+          .map((r) => `### ${r.filename}\n${r.content}`)
+          .join('\n\n');
+        result += `\n\n--- 参考资料 ---\n${refBlock}`;
+      }
+
+      return result;
+    },
+
+    recommendSkills(chapterId: string, skills: WritingSkill[]): ScoredSkill[] {
+      const context = this.packContext(chapterId);
+      const signals = analyzeSignals(context);
+
+      const scored: ScoredSkill[] = [];
+
+      for (const skill of skills) {
+        if (!skill.enabled) continue;
+
+        if (skill.contextHints.length === 0) {
+          // 没有推荐条件的技能给中性分数
+          scored.push({ skill, score: 0.5, matchedSignals: [] });
+          continue;
+        }
+
+        let totalWeight = 0;
+        let matchedWeight = 0;
+        const matchedSignals: string[] = [];
+
+        for (const hint of skill.contextHints) {
+          const weight = hint.weight ?? 1.0;
+          totalWeight += weight;
+          if (matchSignal(signals, hint.signal, hint.condition)) {
+            matchedWeight += weight;
+            matchedSignals.push(hint.signal);
+          }
+        }
+
+        const score = totalWeight > 0 ? Math.min(matchedWeight / totalWeight, 1.0) : 0.5;
+        scored.push({ skill, score, matchedSignals });
+      }
+
+      scored.sort((a, b) => b.score - a.score);
+      return scored;
     },
   };
 }

@@ -1,11 +1,12 @@
 import { useState, useRef, type CSSProperties } from 'react';
 import type { AIAssistantStore } from '../../types/stores';
-import type { AIConfig, AIProvider, PromptTemplate } from '../../types/ai';
+import type { AIConfig, AIProvider, PromptTemplate, WritingSkill, SkillParameter, ContextHint } from '../../types/ai';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Input } from '../ui/Input';
 import { TextArea } from '../ui/TextArea';
 import { Button } from '../ui/Button';
 import { showToast } from '../ui/Toast';
+import { parseSkillMarkdown, serializeSkillToZip, parseSkillZip } from '../../lib/skill-parser';
 
 const s: Record<string, CSSProperties> = {
   tabs: { display: 'flex', borderBottom: '1px solid var(--color-border)', marginBottom: 12 },
@@ -36,6 +37,33 @@ const s: Record<string, CSSProperties> = {
   btnRow: { display: 'flex', gap: 6, marginTop: 4 },
   hint: { fontSize: 11, color: 'var(--color-text-secondary)', fontStyle: 'italic' },
   activeLabel: { fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)', marginTop: 8 },
+  skillBadge: {
+    fontSize: 10, background: 'var(--color-accent)', color: '#fff',
+    borderRadius: 3, padding: '1px 4px', marginLeft: 4, fontWeight: 600,
+  },
+  subSection: {
+    border: '1px solid var(--color-border)', borderRadius: 'var(--radius)',
+    padding: 8, display: 'flex', flexDirection: 'column', gap: 6,
+  },
+  subRow: {
+    display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
+  },
+  removeBtn: {
+    background: 'none', border: 'none', color: 'var(--color-error)',
+    cursor: 'pointer', fontSize: 14, padding: '0 4px', lineHeight: '1',
+  },
+};
+
+const SIGNAL_LABELS: Record<string, string> = {
+  wordCount: '字数',
+  hasDialogue: '包含对话',
+  isNearEnd: '接近结尾',
+  hasCharacters: '有角色信息',
+  hasWorldEntries: '有世界观设定',
+};
+
+const CONDITION_LABELS: Record<string, string> = {
+  low: '低', high: '高', true: '是', false: '否',
 };
 
 interface AIConfigDialogProps {
@@ -45,7 +73,7 @@ interface AIConfigDialogProps {
 }
 
 export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) {
-  const [activeTab, setActiveTab] = useState<'providers' | 'templates'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'templates' | 'skills'>('providers');
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
@@ -65,6 +93,19 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
   const [tSystem, setTSystem] = useState('');
   const [tUser, setTUser] = useState('');
 
+  // Skills state
+  const [skills, setSkills] = useState<WritingSkill[]>([]);
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+
+  // Skill form
+  const [skName, setSkName] = useState('');
+  const [skIcon, setSkIcon] = useState('');
+  const [skDesc, setSkDesc] = useState('');
+  const [skPrompt, setSkPrompt] = useState('');
+  const [skEnabled, setSkEnabled] = useState(true);
+  const [skParams, setSkParams] = useState<SkillParameter[]>([]);
+  const [skHints, setSkHints] = useState<ContextHint[]>([]);
+
   // Render-phase sync: open changed → reload config from store
   const [prevOpen, setPrevOpen] = useState(open);
   if (open !== prevOpen) {
@@ -77,6 +118,9 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
       setActiveTemplateId(config.activeTemplateId);
       setSelectedProviderId(config.providers[0]?.id ?? null);
       setSelectedTemplateId(config.promptTemplates[0]?.id ?? null);
+      const allSkills = aiStore.listSkills();
+      setSkills(allSkills);
+      setSelectedSkillId(allSkills[0]?.id ?? null);
     }
   }
 
@@ -99,20 +143,58 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
     if (t) { setTName(t.name); setTSystem(t.systemPrompt); setTUser(t.userPromptTemplate); }
   }
 
+  // Render-phase sync: selectedSkillId changed → load skill form fields
+  const [prevSelectedSkillId, setPrevSelectedSkillId] = useState(selectedSkillId);
+  if (selectedSkillId !== prevSelectedSkillId) {
+    setPrevSelectedSkillId(selectedSkillId);
+    const sk = skills.find((x) => x.id === selectedSkillId);
+    if (sk) {
+      setSkName(sk.name);
+      setSkIcon(sk.icon);
+      setSkDesc(sk.description);
+      setSkPrompt(sk.promptTemplate);
+      setSkEnabled(sk.enabled);
+      setSkParams(sk.parameters.map((p) => ({ ...p })));
+      setSkHints(sk.contextHints.map((h) => ({ ...h })));
+    }
+  }
+
+  const loadSkillForm = (sk: WritingSkill) => {
+    setSkName(sk.name);
+    setSkIcon(sk.icon);
+    setSkDesc(sk.description);
+    setSkPrompt(sk.promptTemplate);
+    setSkEnabled(sk.enabled);
+    setSkParams(sk.parameters.map((p) => ({ ...p })));
+    setSkHints(sk.contextHints.map((h) => ({ ...h })));
+  };
+
+  const saveCurrentSkill = () => {
+    if (!selectedSkillId) return;
+    aiStore.updateSkill(selectedSkillId, {
+      name: skName,
+      icon: skIcon,
+      description: skDesc,
+      promptTemplate: skPrompt,
+      enabled: skEnabled,
+      parameters: skParams,
+      contextHints: skHints,
+    });
+  };
+
   const handleSave = () => {
-    // Save provider changes
     if (selectedProviderId) {
       aiStore.updateProvider(selectedProviderId, {
         name: pName, apiKey: pApiKey, modelName: pModel,
         apiEndpoint: pEndpoint, timeoutMs: pTimeout,
       });
     }
-    // Save template changes
     if (selectedTemplateId) {
       aiStore.updateTemplate(selectedTemplateId, {
         name: tName, systemPrompt: tSystem, userPromptTemplate: tUser,
       });
     }
+    saveCurrentSkill();
     if (activeProviderId) aiStore.setActiveProvider(activeProviderId);
     if (activeTemplateId) aiStore.setActiveTemplate(activeTemplateId);
     onClose();
@@ -152,7 +234,136 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
     if (activeTemplateId === selectedTemplateId) setActiveTemplateId(null);
   };
 
+  const handleAddSkill = () => {
+    saveCurrentSkill();
+    const newSkill = aiStore.addSkill({
+      name: '新技能',
+      icon: '🔧',
+      description: '',
+      promptTemplate: '{user_input}',
+      parameters: [],
+      contextHints: [],
+      sortOrder: skills.length,
+      enabled: true,
+    });
+    const allSkills = aiStore.listSkills();
+    setSkills(allSkills);
+    setSelectedSkillId(newSkill.id);
+  };
+
+  const handleDeleteSkill = () => {
+    if (!selectedSkillId) return;
+    const sk = skills.find((x) => x.id === selectedSkillId);
+    if (sk?.builtIn) return;
+    aiStore.deleteSkill(selectedSkillId);
+    const allSkills = aiStore.listSkills();
+    setSkills(allSkills);
+    setSelectedSkillId(allSkills[0]?.id ?? null);
+  };
+
+  const handleResetSkill = () => {
+    if (!selectedSkillId) return;
+    aiStore.resetSkill(selectedSkillId);
+    const allSkills = aiStore.listSkills();
+    setSkills(allSkills);
+    const sk = allSkills.find((x) => x.id === selectedSkillId);
+    if (sk) loadSkillForm(sk);
+    showToast('success', '已恢复默认设置');
+  };
+
+  const handleSelectSkill = (id: string) => {
+    if (id === selectedSkillId) return;
+    saveCurrentSkill();
+    const allSkills = aiStore.listSkills();
+    setSkills(allSkills);
+    setSelectedSkillId(id);
+  };
+
+  const addParam = () => {
+    setSkParams([...skParams, {
+      key: `param${skParams.length + 1}`, label: '参数', type: 'text',
+      defaultValue: '', placeholder: '', required: false,
+    }]);
+  };
+  const removeParam = (idx: number) => setSkParams(skParams.filter((_, i) => i !== idx));
+  const updateParam = (idx: number, updates: Partial<SkillParameter>) => {
+    setSkParams(skParams.map((p, i) => i === idx ? { ...p, ...updates } : p));
+  };
+
+  const addHint = () => {
+    setSkHints([...skHints, { signal: 'wordCount', condition: 'low', weight: 1.0 }]);
+  };
+  const removeHint = (idx: number) => setSkHints(skHints.filter((_, i) => i !== idx));
+  const updateHint = (idx: number, updates: Partial<ContextHint>) => {
+    setSkHints(skHints.map((h, i) => i === idx ? { ...h, ...updates } : h));
+  };
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const skillFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExportSkill = () => {
+    if (!selectedSkillId) return;
+    const sk = skills.find((x) => x.id === selectedSkillId);
+    if (!sk) return;
+    serializeSkillToZip(sk).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${sk.slug || sk.id}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('success', `已导出技能: ${sk.name}`);
+    }).catch((err) => {
+      showToast('error', `导出失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    });
+  };
+
+  const handleImportSkill = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const addParsedSkill = (skill: WritingSkill) => {
+      saveCurrentSkill();
+      aiStore.addSkill({
+        name: skill.name,
+        icon: skill.icon,
+        description: skill.description,
+        promptTemplate: skill.promptTemplate,
+        parameters: skill.parameters,
+        contextHints: skill.contextHints,
+        sortOrder: skill.sortOrder,
+        enabled: skill.enabled,
+        license: skill.license,
+        version: skill.version,
+        slug: skill.slug,
+        references: skill.references,
+      });
+      const allSkills = aiStore.listSkills();
+      setSkills(allSkills);
+      setSelectedSkillId(allSkills[allSkills.length - 1]?.id ?? null);
+      showToast('success', `已导入技能: ${skill.name}`);
+    };
+
+    if (file.name.endsWith('.zip')) {
+      parseSkillZip(file).then(addParsedSkill).catch((err) => {
+        showToast('error', `导入失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      });
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const skill = parseSkillMarkdown(reader.result as string);
+          addParsedSkill(skill);
+        } catch (err) {
+          showToast('error', `导入失败: ${err instanceof Error ? err.message : '未知错误'}`);
+        }
+      };
+      reader.readAsText(file);
+    }
+    e.target.value = '';
+  };
 
   const handleExportConfig = () => {
     const config = aiStore.getConfig();
@@ -181,7 +392,6 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
           return;
         }
         aiStore.updateConfig(imported);
-        // Reload local state
         const config = aiStore.getConfig();
         setProviders(config.providers);
         setTemplates(config.promptTemplates);
@@ -195,9 +405,10 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
       }
     };
     reader.readAsText(file);
-    // Reset input so same file can be re-imported
     e.target.value = '';
   };
+
+  const selectedSkill = skills.find((x) => x.id === selectedSkillId);
 
   return (
     <ConfirmDialog open={open} title="AI 辅助设置" confirmText="保存" onConfirm={handleSave} onCancel={onClose}>
@@ -206,6 +417,8 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
           onClick={() => setActiveTab('providers')}>模型提供商</button>
         <button style={{ ...s.tab, ...(activeTab === 'templates' ? s.tabActive : {}) }}
           onClick={() => setActiveTab('templates')}>Prompt 模板</button>
+        <button style={{ ...s.tab, ...(activeTab === 'skills' ? s.tabActive : {}) }}
+          onClick={() => setActiveTab('skills')}>技能管理</button>
       </div>
 
       {activeTab === 'providers' && (
@@ -315,6 +528,161 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
             ) : (
               <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', padding: 16 }}>
                 请选择或添加一个模板
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'skills' && (
+        <div style={s.splitLayout}>
+          <div style={s.listCol}>
+            {skills.map((sk) => (
+              <div key={sk.id}
+                style={{
+                  ...s.listItem,
+                  ...(selectedSkillId === sk.id ? s.listItemActive : {}),
+                  opacity: sk.enabled ? 1 : 0.5,
+                }}
+                onClick={() => handleSelectSkill(sk.id)}>
+                {sk.icon} {sk.name}
+                {sk.builtIn && <span style={s.skillBadge}>内置</span>}
+              </div>
+            ))}
+            <div style={s.btnRow}>
+              <Button variant="secondary" onClick={handleAddSkill}
+                style={{ height: 24, fontSize: 11, flex: 1 }}>添加</Button>
+              <Button variant="secondary" onClick={handleDeleteSkill}
+                style={{ height: 24, fontSize: 11, flex: 1, color: 'var(--color-error)' }}
+                disabled={!selectedSkillId || !!selectedSkill?.builtIn}>删除</Button>
+            </div>
+            <div style={s.btnRow}>
+              <Button variant="secondary" onClick={handleExportSkill}
+                style={{ height: 24, fontSize: 11, flex: 1 }}
+                disabled={!selectedSkillId}>导出</Button>
+              <Button variant="secondary" onClick={() => skillFileInputRef.current?.click()}
+                style={{ height: 24, fontSize: 11, flex: 1 }}>导入</Button>
+              <input ref={skillFileInputRef} type="file" accept=".zip,.md" style={{ display: 'none' }}
+                onChange={handleImportSkill} />
+            </div>
+          </div>
+          <div style={{ ...s.formCol, overflowY: 'auto', maxHeight: 420 }}>
+            {selectedSkillId && selectedSkill ? (
+              <>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ ...s.field, width: 60 }}>
+                    <span style={s.label}>图标</span>
+                    <Input value={skIcon} onChange={(e) => setSkIcon(e.currentTarget.value)}
+                      style={{ textAlign: 'center' }} />
+                  </div>
+                  <div style={{ ...s.field, flex: 1 }}>
+                    <span style={s.label}>名称</span>
+                    <Input value={skName} onChange={(e) => setSkName(e.currentTarget.value)} />
+                  </div>
+                  <div style={{ ...s.field, width: 60, justifyContent: 'flex-end' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={skEnabled} onChange={(e) => setSkEnabled(e.target.checked)} />
+                      启用
+                    </label>
+                  </div>
+                </div>
+
+                <div style={s.field}>
+                  <span style={s.label}>描述</span>
+                  <Input value={skDesc} onChange={(e) => setSkDesc(e.currentTarget.value)}
+                    placeholder="简短描述技能用途" />
+                </div>
+
+                <div style={s.field}>
+                  <span style={s.label}>提示词模板</span>
+                  <TextArea value={skPrompt} onChange={(e) => setSkPrompt(e.currentTarget.value)}
+                    style={{ minHeight: 80 }} />
+                  <span style={s.hint}>
+                    使用 {'{param:key}'} 引用参数，如 {'{param:character1}'}。运行时用户填写的参数值会替换对应占位符。
+                  </span>
+                </div>
+
+                <div style={s.field}>
+                  <span style={s.label}>参数列表</span>
+                  <div style={s.subSection}>
+                    {skParams.length === 0 && (
+                      <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>暂无参数</span>
+                    )}
+                    {skParams.map((p, i) => (
+                      <div key={i} style={s.subRow}>
+                        <Input value={p.key} onChange={(e) => updateParam(i, { key: e.currentTarget.value })}
+                          placeholder="key" style={{ width: 70, height: 28, fontSize: 12 }} />
+                        <Input value={p.label} onChange={(e) => updateParam(i, { label: e.currentTarget.value })}
+                          placeholder="显示名" style={{ width: 70, height: 28, fontSize: 12 }} />
+                        <select style={{ ...s.select, width: 70, height: 28, fontSize: 12 }}
+                          value={p.type} onChange={(e) => updateParam(i, { type: e.target.value as SkillParameter['type'] })}>
+                          <option value="text">文本</option>
+                          <option value="number">数字</option>
+                          <option value="select">选择</option>
+                        </select>
+                        {p.type === 'select' && (
+                          <select style={{ ...s.select, width: 90, height: 28, fontSize: 12 }}
+                            value={p.source ?? ''}
+                            onChange={(e) => updateParam(i, { source: (e.target.value || undefined) as SkillParameter['source'] })}>
+                            <option value="">静态选项</option>
+                            <option value="characters">角色列表</option>
+                          </select>
+                        )}
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 11 }}>
+                          <input type="checkbox" checked={p.required ?? false}
+                            onChange={(e) => updateParam(i, { required: e.target.checked })} />
+                          必填
+                        </label>
+                        <button style={s.removeBtn} onClick={() => removeParam(i)} title="移除参数">×</button>
+                      </div>
+                    ))}
+                    <Button variant="secondary" onClick={addParam}
+                      style={{ height: 24, fontSize: 11, alignSelf: 'flex-start' }}>+ 添加参数</Button>
+                  </div>
+                </div>
+
+                <div style={s.field}>
+                  <span style={s.label}>上下文推荐条件</span>
+                  <div style={s.subSection}>
+                    {skHints.length === 0 && (
+                      <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>暂无条件（不参与智能推荐）</span>
+                    )}
+                    {skHints.map((h, i) => (
+                      <div key={i} style={s.subRow}>
+                        <select style={{ ...s.select, width: 110, height: 28, fontSize: 12 }}
+                          value={h.signal} onChange={(e) => updateHint(i, { signal: e.target.value as ContextHint['signal'] })}>
+                          {Object.entries(SIGNAL_LABELS).map(([k, v]) => (
+                            <option key={k} value={k}>{v}</option>
+                          ))}
+                        </select>
+                        <select style={{ ...s.select, width: 60, height: 28, fontSize: 12 }}
+                          value={h.condition} onChange={(e) => updateHint(i, { condition: e.target.value as ContextHint['condition'] })}>
+                          {Object.entries(CONDITION_LABELS).map(([k, v]) => (
+                            <option key={k} value={k}>{v}</option>
+                          ))}
+                        </select>
+                        <Input type="number" value={String(h.weight ?? 1)}
+                          onChange={(e) => updateHint(i, { weight: Number(e.currentTarget.value) || 1 })}
+                          placeholder="权重" style={{ width: 50, height: 28, fontSize: 12 }} />
+                        <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>权重</span>
+                        <button style={s.removeBtn} onClick={() => removeHint(i)} title="移除条件">×</button>
+                      </div>
+                    ))}
+                    <Button variant="secondary" onClick={addHint}
+                      style={{ height: 24, fontSize: 11, alignSelf: 'flex-start' }}>+ 添加条件</Button>
+                  </div>
+                </div>
+
+                {selectedSkill.builtIn && (
+                  <Button variant="secondary" onClick={handleResetSkill}
+                    style={{ height: 28, fontSize: 12, alignSelf: 'flex-start' }}>
+                    恢复默认
+                  </Button>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', padding: 16 }}>
+                请选择或添加一个技能
               </div>
             )}
           </div>

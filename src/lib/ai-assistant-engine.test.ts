@@ -13,6 +13,8 @@ import type {
   TimelineStore,
   AIAssistantStore,
 } from '../types/stores';
+import { BUILT_IN_SKILLS } from '../types/skill-defaults';
+import type { WritingSkill } from '../types/ai';
 
 const PROJECT_ID = 'proj-1';
 
@@ -562,5 +564,221 @@ describe('AIAssistantEngine', () => {
         globalThis.fetch = originalFetch;
       }
     });
+  });
+});
+
+// ─── resolveSkillPrompt Tests ───
+
+function makeTestSkill(overrides?: Partial<WritingSkill>): WritingSkill {
+  return {
+    id: 'test-skill',
+    name: '测试',
+    icon: '🧪',
+    description: '测试技能',
+    promptTemplate: '请写一段关于{param:topic}的{param:style}文字。',
+    parameters: [
+      { key: 'topic', label: '主题', type: 'text', required: true },
+      { key: 'style', label: '风格', type: 'text', required: false },
+    ],
+    contextHints: [],
+    sortOrder: 0,
+    builtIn: false,
+    enabled: true,
+    ...overrides,
+  };
+}
+
+describe('resolveSkillPrompt', () => {
+  let engine: AIAssistantEngine;
+
+  beforeEach(() => {
+    engine = createEngine(setupStores());
+  });
+
+  it('should replace param placeholders with provided values', () => {
+    const skill = makeTestSkill();
+    const result = engine.resolveSkillPrompt(skill, { topic: '春天', style: '抒情' });
+    expect(result).toBe('请写一段关于春天的抒情文字。');
+  });
+
+  it('should leave required param placeholder when value is missing', () => {
+    const skill = makeTestSkill();
+    const result = engine.resolveSkillPrompt(skill, { style: '抒情' });
+    expect(result).toContain('{param:topic}');
+    expect(result).toContain('抒情');
+  });
+
+  it('should replace optional missing param with empty string', () => {
+    const skill = makeTestSkill();
+    const result = engine.resolveSkillPrompt(skill, { topic: '春天' });
+    // Optional {param:style} replaced with empty, extra spaces cleaned
+    expect(result).not.toContain('{param:style}');
+    expect(result).toContain('春天');
+  });
+
+  it('should return promptTemplate unchanged for no-param skill', () => {
+    const skill = makeTestSkill({
+      promptTemplate: '请续写当前章节内容。',
+      parameters: [],
+    });
+    const result = engine.resolveSkillPrompt(skill, {});
+    expect(result).toBe('请续写当前章节内容。');
+  });
+
+  it('should handle multiple occurrences of same param', () => {
+    const skill = makeTestSkill({
+      promptTemplate: '{param:name}说了一句话，然后{param:name}转身离开。',
+      parameters: [{ key: 'name', label: '角色', type: 'text', required: false }],
+    });
+    const result = engine.resolveSkillPrompt(skill, { name: '张三' });
+    expect(result).toBe('张三说了一句话，然后张三转身离开。');
+  });
+
+  it('should not interfere with context placeholders like {user_input}', () => {
+    const skill = makeTestSkill({
+      promptTemplate: '请处理 {user_input} 和 {param:extra}。',
+      parameters: [{ key: 'extra', label: '额外', type: 'text', required: false }],
+    });
+    const result = engine.resolveSkillPrompt(skill, { extra: '内容' });
+    // {user_input} should remain untouched (it's not a {param:*} pattern)
+    expect(result).toBe('请处理 {user_input} 和 内容。');
+  });
+
+  it('appends references content to prompt when skill has references', () => {
+    const skill = makeTestSkill({
+      promptTemplate: '请按照参考资料写作。',
+      parameters: [],
+      references: [
+        { filename: 'guide.md', content: '# 风格指南\n正式、专业' },
+        { filename: 'dict.md', content: '# 同义词\n提高→优化' },
+      ],
+    });
+    const result = engine.resolveSkillPrompt(skill, {});
+    expect(result).toContain('请按照参考资料写作。');
+    expect(result).toContain('--- 参考资料 ---');
+    expect(result).toContain('### guide.md');
+    expect(result).toContain('# 风格指南');
+    expect(result).toContain('### dict.md');
+    expect(result).toContain('# 同义词');
+  });
+
+  it('does not append references block when skill has no references', () => {
+    const skill = makeTestSkill({
+      promptTemplate: '普通模板。',
+      parameters: [],
+    });
+    const result = engine.resolveSkillPrompt(skill, {});
+    expect(result).toBe('普通模板。');
+    expect(result).not.toContain('参考资料');
+  });
+
+  it('does not append references block when references array is empty', () => {
+    const skill = makeTestSkill({
+      promptTemplate: '普通模板。',
+      parameters: [],
+      references: [],
+    });
+    const result = engine.resolveSkillPrompt(skill, {});
+    expect(result).toBe('普通模板。');
+    expect(result).not.toContain('参考资料');
+  });
+});
+
+// ─── recommendSkills Tests ───
+
+describe('recommendSkills', () => {
+  let stores: ReturnType<typeof setupStores>;
+  let engine: AIAssistantEngine;
+
+  beforeEach(() => {
+    stores = setupStores();
+    engine = createEngine(stores);
+  });
+
+  it('should return scored skills sorted by score descending', () => {
+    const ch = stores.chapterStore.createChapter(PROJECT_ID, null, '章节', 'chapter');
+    stores.chapterStore.updateChapter(ch.id, { content: '短内容' });
+
+    const results = engine.recommendSkills(ch.id, BUILT_IN_SKILLS);
+    expect(results.length).toBeGreaterThan(0);
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i].score).toBeLessThanOrEqual(results[i - 1].score);
+    }
+  });
+
+  it('should give neutral score (0.5) to skills without contextHints', () => {
+    const ch = stores.chapterStore.createChapter(PROJECT_ID, null, '章节', 'chapter');
+    const noHintSkill: WritingSkill = {
+      ...makeTestSkill(),
+      contextHints: [],
+    };
+    const results = engine.recommendSkills(ch.id, [noHintSkill]);
+    expect(results).toHaveLength(1);
+    expect(results[0].score).toBe(0.5);
+    expect(results[0].matchedSignals).toEqual([]);
+  });
+
+  it('should score 扩写 high for short chapter content (wordCount:low)', () => {
+    const ch = stores.chapterStore.createChapter(PROJECT_ID, null, '章节', 'chapter');
+    stores.chapterStore.updateChapter(ch.id, { content: '很短的内容' });
+
+    const expandSkill = BUILT_IN_SKILLS.find((s) => s.id === 'builtin-expand')!;
+    const results = engine.recommendSkills(ch.id, [expandSkill]);
+    expect(results[0].score).toBeGreaterThan(0.5);
+    expect(results[0].matchedSignals).toContain('wordCount');
+  });
+
+  it('should score 对话 high when chapter has character info', () => {
+    const ch = stores.chapterStore.createChapter(PROJECT_ID, null, '章节', 'chapter');
+    stores.chapterStore.updateChapter(ch.id, { content: '对话内容「你好」' });
+
+    // Add character + timeline to associate
+    const char = stores.characterStore.createCharacter(PROJECT_ID, {
+      name: '张三', aliases: [], appearance: '', personality: '', backstory: '',
+      customAttributes: {},
+    });
+    stores.timelineStore.createTimelinePoint({
+      projectId: PROJECT_ID, label: 'T1', description: '事件',
+      sortOrder: 0, associatedChapterIds: [ch.id],
+      associatedCharacterIds: [char.id],
+    });
+
+    const dialogueSkill = BUILT_IN_SKILLS.find((s) => s.id === 'builtin-dialogue')!;
+    const results = engine.recommendSkills(ch.id, [dialogueSkill]);
+    expect(results[0].score).toBeGreaterThan(0.5);
+    expect(results[0].matchedSignals).toContain('hasCharacters');
+  });
+
+  it('should exclude disabled skills', () => {
+    const ch = stores.chapterStore.createChapter(PROJECT_ID, null, '章节', 'chapter');
+    const disabledSkill: WritingSkill = {
+      ...makeTestSkill(),
+      enabled: false,
+    };
+    const enabledSkill: WritingSkill = {
+      ...makeTestSkill(),
+      id: 'enabled-skill',
+      enabled: true,
+    };
+    const results = engine.recommendSkills(ch.id, [disabledSkill, enabledSkill]);
+    expect(results).toHaveLength(1);
+    expect(results[0].skill.id).toBe('enabled-skill');
+  });
+
+  it('should handle non-existent chapter gracefully', () => {
+    const results = engine.recommendSkills('no-such-chapter', BUILT_IN_SKILLS);
+    // Should still return results (with empty context signals)
+    expect(results.length).toBe(BUILT_IN_SKILLS.length);
+  });
+
+  it('should score all values between 0 and 1', () => {
+    const ch = stores.chapterStore.createChapter(PROJECT_ID, null, '章节', 'chapter');
+    stores.chapterStore.updateChapter(ch.id, { content: 'x'.repeat(3000) + '「对话」' });
+
+    const results = engine.recommendSkills(ch.id, BUILT_IN_SKILLS);
+    for (const r of results) {
+      expect(r.score).toBeGreaterThanOrEqual(0);
+      expect(r.score).toBeLessThanOrEqual(1);
+    }
   });
 });

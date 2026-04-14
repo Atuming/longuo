@@ -1,7 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { EditorLayout } from '../components/layout/EditorLayout';
-import { Toolbar } from '../components/layout/Toolbar';
 import { SidebarTabs, type SidebarTabKey } from '../components/sidebar/SidebarTabs';
 import { OutlineTab } from '../components/sidebar/OutlineTab';
 import { CharacterTab } from '../components/sidebar/CharacterTab';
@@ -10,20 +9,13 @@ import { TimelineTab } from '../components/sidebar/TimelineTab';
 import { PlotTab } from '../components/sidebar/PlotTab';
 import { WritingEditor } from '../components/editor/WritingEditor';
 import type { WritingEditorHandle } from '../components/editor/WritingEditor';
-import { CharacterDetailPanel } from '../components/panels/CharacterDetailPanel';
-import { WorldDetailPanel } from '../components/panels/WorldDetailPanel';
-import { TimelineDetailPanel } from '../components/panels/TimelineDetailPanel';
-import { ConsistencyPanel } from '../components/panels/ConsistencyPanel';
-import { RelationshipGraphPage } from '../components/graph/RelationshipGraphPage';
-import { AIAssistantPanel } from '../components/ai/AIAssistantPanel';
-import { AIConfigDialog } from '../components/ai/AIConfigDialog';
-import { ExportDialog } from '../components/dialogs/ExportDialog';
-import { CharacterDialog } from '../components/dialogs/CharacterDialog';
-import { WorldDialog } from '../components/dialogs/WorldDialog';
-import { TimelineDialog } from '../components/dialogs/TimelineDialog';
-import { PlotDialog } from '../components/dialogs/PlotDialog';
-import { VersionHistoryPanel } from '../components/panels/VersionHistoryPanel';
+import { ErrorBoundary } from '../components/ui/ErrorBoundary';
 import { showToast } from '../components/ui/Toast';
+import { EditorStoreProvider } from './editor/EditorStoreContext';
+import { EditorToolbar, type ViewMode, type PanelMode } from './editor/EditorToolbar';
+import { EditorContent } from './editor/EditorContent';
+import { EditorRightPanel } from './editor/EditorRightPanel';
+import { DialogManager } from './editor/DialogManager';
 import type { ProjectStore } from '../types/stores';
 import type { NovelFileData } from '../types/project';
 import type { ConsistencyIssue } from '../types/consistency';
@@ -38,6 +30,7 @@ import { createTimelineStore } from '../stores/timeline-store';
 import { createPlotStore } from '../stores/plot-store';
 import { createRelationshipStore } from '../stores/relationship-store';
 import { createAIAssistantStore, loadDefaultAIConfig } from '../stores/ai-assistant-store';
+import { loadBuiltInSkills } from '../types/skill-defaults';
 import { createThemeStore } from '../stores/theme-store';
 import { createSnapshotStore } from '../stores/snapshot-store';
 import { createEventBus } from '../lib/event-bus';
@@ -45,63 +38,31 @@ import { createConsistencyEngine } from '../lib/consistency-engine';
 import { createExportEngine } from '../lib/export-engine';
 import { createAIAssistantEngine } from '../lib/ai-assistant-engine';
 
-type ViewMode = 'writing' | 'graph' | 'timeline' | 'plot';
-type PanelMode = 'none' | 'character' | 'world' | 'timeline' | 'consistency' | 'version-history';
-
-/* ── styles ── */
+/* ── focus-mode styles ── */
 const s: Record<string, CSSProperties> = {
+  focusWrapper: {
+    display: 'flex', flexDirection: 'column', height: '100%',
+  },
   focusToolbar: {
     height: 'var(--toolbar-height)', background: 'var(--color-primary)',
     display: 'flex', alignItems: 'center', padding: '0 var(--spacing-sm)',
     color: '#fff', fontSize: 14, flexShrink: 0,
   },
   projectName: { font: 'var(--font-h2)', color: '#fff', cursor: 'pointer' },
-  separator: { width: 1, height: 24, background: 'rgba(255,255,255,0.2)', margin: '0 8px' },
-  autoSaveHint: { fontSize: 12, color: '#68D391', marginLeft: 8 },
   spacer: { flex: 1 },
-  tabPlaceholder: {
-    padding: 'var(--spacing-sm)', color: 'var(--color-text-secondary)', fontSize: 13,
-    textAlign: 'center' as const,
-  },
   toolBtn: {
     background: 'none', border: '1px solid rgba(255,255,255,0.3)', color: '#fff',
     cursor: 'pointer', fontSize: 12, height: 30, padding: '0 10px',
     borderRadius: 'var(--radius)', display: 'flex', alignItems: 'center', gap: 4,
   },
-  toolBtnActive: {
-    background: 'rgba(255,255,255,0.15)', borderColor: 'rgba(255,255,255,0.5)',
-  },
-  viewGroup: {
-    display: 'flex', gap: 0, borderRadius: 'var(--radius)', overflow: 'hidden',
-    border: '1px solid rgba(255,255,255,0.3)',
-  },
-  viewBtn: {
-    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-    cursor: 'pointer', fontSize: 12, height: 28, padding: '0 10px',
-    borderRight: '1px solid rgba(255,255,255,0.2)',
-  },
-  viewBtnActive: {
-    background: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600,
-  },
-  viewBtnLast: { borderRight: 'none' },
-  exportDropdown: { position: 'relative' as const },
-  exportMenu: {
-    position: 'absolute' as const, top: 34, right: 0, background: 'white',
-    borderRadius: 'var(--radius)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-    zIndex: 100, minWidth: 120, overflow: 'hidden',
-  },
-  exportMenuItem: {
-    padding: '8px 16px', fontSize: 13, cursor: 'pointer', color: 'var(--color-text)',
-    border: 'none', background: 'none', width: '100%', textAlign: 'left' as const,
-    display: 'block',
-  },
+  focusEditor: { flex: 1, overflow: 'hidden' },
 };
 
 interface EditorPageProps {
   projectStore: ProjectStore;
 }
 
-export function EditorPage({ projectStore }: EditorPageProps) {
+function EditorPage({ projectStore }: EditorPageProps) {
   const navigate = useNavigate();
   const project = projectStore.getCurrentProject();
 
@@ -118,12 +79,14 @@ export function EditorPage({ projectStore }: EditorPageProps) {
   const snapshotStore = useMemo(() => createSnapshotStore(), []);
   const consistencyEngine = useMemo(() => createConsistencyEngine(), []);
 
-  // 每次启动都从 ai-config.json 加载配置（配置文件始终优先）
   useEffect(() => {
     loadDefaultAIConfig().then((defaults) => {
       if (defaults) {
         aiStore.updateConfig(defaults);
       }
+    });
+    loadBuiltInSkills().then((skills) => {
+      aiStore.setBuiltInSkills(skills);
     });
   }, [aiStore]);
   const exportEngine = useMemo(() => createExportEngine(), []);
@@ -137,7 +100,6 @@ export function EditorPage({ projectStore }: EditorPageProps) {
     return themeStore.getEffectiveTheme();
   });
 
-  // Initialize and sync document theme attribute
   useEffect(() => {
     document.documentElement.dataset.theme = effectiveTheme;
   }, [effectiveTheme]);
@@ -218,7 +180,6 @@ export function EditorPage({ projectStore }: EditorPageProps) {
     const newContent = consistencyEngine.applySuggestion(chapter.content, issue);
     chapterStore.updateChapter(issue.chapterId, { content: newContent });
     setConsistencyFixedCount((c) => c + 1);
-    // Remove applied issue
     setConsistencyIssues((prev) => prev.filter((i) => i !== issue));
     showToast('success', `已修正：${issue.foundText} → ${issue.suggestedName}`);
   }, [chapterStore, consistencyEngine]);
@@ -239,7 +200,6 @@ export function EditorPage({ projectStore }: EditorPageProps) {
     try {
       const result = await exportEngine.exportProject(chapters, options);
       if (result.success && result.data) {
-        // Trigger browser download
         const url = URL.createObjectURL(result.data);
         const a = document.createElement('a');
         a.href = url;
@@ -255,7 +215,6 @@ export function EditorPage({ projectStore }: EditorPageProps) {
         showToast('success', '导出成功');
       } else {
         showToast('error', result.error || '导出失败');
-        // If partial data available, offer download
         if (result.partialData) {
           const url = URL.createObjectURL(result.partialData);
           const a = document.createElement('a');
@@ -278,7 +237,6 @@ export function EditorPage({ projectStore }: EditorPageProps) {
     if (editorRef.current) {
       editorRef.current.insertAtCursor(content);
     } else {
-      // fallback: write to store directly (editor will be out of sync until re-mount)
       const chapter = chapterStore.getChapter(selectedChapterId);
       if (!chapter) return;
       const newContent = chapter.content ? chapter.content + '\n\n' + content : content;
@@ -304,7 +262,7 @@ export function EditorPage({ projectStore }: EditorPageProps) {
 
   const handleSaveSnapshot = useCallback(() => {
     const note = window.prompt('请输入快照备注：', '');
-    if (note === null) return; // user cancelled
+    if (note === null) return;
     try {
       const data = collectProjectData();
       snapshotStore.createSnapshot(projectId, data, note || '手动快照');
@@ -316,18 +274,121 @@ export function EditorPage({ projectStore }: EditorPageProps) {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleRestoreSnapshot = useCallback((_restoredData: NovelFileData) => {
-    // For now, show a toast suggesting reload since reloading all stores is complex
-    // First, create an auto-backup of current state
     try {
       const currentData = collectProjectData();
-      // Find the snapshot that matches the restored data to call restoreSnapshot properly
-      // Since VersionHistoryPanel passes snapshot.data directly, we do the auto-backup here
       snapshotStore.createSnapshot(projectId, currentData, '恢复前自动备份');
     } catch {
       // If auto-backup fails, still show the toast
     }
     showToast('success', '已恢复到快照，建议刷新页面以加载完整数据');
   }, [collectProjectData, snapshotStore, projectId]);
+
+  /* ── Save handler ── */
+  const handleSave = useCallback(async () => {
+    try { await projectStore.saveProject(); showToast('success', '已保存'); } catch { showToast('error', '保存失败'); }
+  }, [projectStore]);
+
+  /* ── Dialog callbacks ── */
+  const handleCharConfirm = useCallback((data: Omit<Character, 'id' | 'projectId'>) => {
+    if (editingCharacter) {
+      characterStore.updateCharacter(editingCharacter.id, data);
+    } else {
+      characterStore.createCharacter(projectId, data);
+    }
+    setShowCharDialog(false);
+    setEditingCharacter(null);
+    setRefreshKey((k) => k + 1);
+  }, [editingCharacter, characterStore, projectId]);
+
+  const handleCharCancel = useCallback(() => {
+    setShowCharDialog(false);
+    setEditingCharacter(null);
+  }, []);
+
+  const handleWorldConfirm = useCallback((data: Omit<WorldEntry, 'id'>) => {
+    if (editingWorld) {
+      worldStore.updateEntry(editingWorld.id, data);
+    } else {
+      worldStore.createEntry(data);
+    }
+    setShowWorldDialog(false);
+    setEditingWorld(null);
+    setRefreshKey((k) => k + 1);
+  }, [editingWorld, worldStore]);
+
+  const handleWorldCancel = useCallback(() => {
+    setShowWorldDialog(false);
+    setEditingWorld(null);
+  }, []);
+
+  const handleTimelineConfirm = useCallback((data: Omit<TimelinePoint, 'id'>) => {
+    if (editingTimeline) {
+      timelineStore.updateTimelinePoint(editingTimeline.id, data);
+    } else {
+      timelineStore.createTimelinePoint(data);
+    }
+    setShowTimelineDialog(false);
+    setEditingTimeline(null);
+    setRefreshKey((k) => k + 1);
+  }, [editingTimeline, timelineStore]);
+
+  const handleTimelineCancel = useCallback(() => {
+    setShowTimelineDialog(false);
+    setEditingTimeline(null);
+  }, []);
+
+  const handlePlotConfirm = useCallback((data: Omit<PlotThread, 'id'>) => {
+    if (editingPlot) {
+      plotStore.updateThread(editingPlot.id, data);
+    } else {
+      plotStore.createThread(data);
+    }
+    setShowPlotDialog(false);
+    setEditingPlot(null);
+    setRefreshKey((k) => k + 1);
+  }, [editingPlot, plotStore]);
+
+  const handlePlotCancel = useCallback(() => {
+    setShowPlotDialog(false);
+    setEditingPlot(null);
+  }, []);
+
+  /* ── Panel CRUD callbacks ── */
+  const handleEditCharacter = useCallback((ch: Character) => {
+    setEditingCharacter(ch);
+    setShowCharDialog(true);
+  }, []);
+
+  const handleDeleteCharacter = useCallback((id: string) => {
+    characterStore.deleteCharacter(id);
+    setSelectedCharId(null);
+    setPanelMode('none');
+    setRefreshKey((k) => k + 1);
+  }, [characterStore]);
+
+  const handleEditWorld = useCallback((entry: WorldEntry) => {
+    setEditingWorld(entry);
+    setShowWorldDialog(true);
+  }, []);
+
+  const handleDeleteWorld = useCallback((id: string) => {
+    worldStore.deleteEntry(id);
+    setSelectedWorldId(null);
+    setPanelMode('none');
+    setRefreshKey((k) => k + 1);
+  }, [worldStore]);
+
+  const handleEditTimeline = useCallback((point: TimelinePoint) => {
+    setEditingTimeline(point);
+    setShowTimelineDialog(true);
+  }, []);
+
+  const handleDeleteTimeline = useCallback((id: string) => {
+    timelineStore.deleteTimelinePoint(id);
+    setSelectedTimelineId(null);
+    setPanelMode('none');
+    setRefreshKey((k) => k + 1);
+  }, [timelineStore]);
 
   /* ── sidebar tab content ── */
   const renderTabContent = (tab: SidebarTabKey) => {
@@ -388,319 +449,155 @@ export function EditorPage({ projectStore }: EditorPageProps) {
     }
   };
 
-  /* ── right panel ── */
-  const renderPanel = () => {
-    switch (panelMode) {
-      case 'character':
-        if (!selectedCharId) return <div style={s.tabPlaceholder}>请选择一个角色</div>;
-        return (
-          <CharacterDetailPanel
-            characterId={selectedCharId}
-            projectId={projectId}
-            characterStore={characterStore}
-            relationshipStore={relationshipStore}
-            timelineStore={timelineStore}
-            onEdit={(ch) => { setEditingCharacter(ch); setShowCharDialog(true); }}
-            onDelete={(id) => { characterStore.deleteCharacter(id); setSelectedCharId(null); setPanelMode('none'); setRefreshKey((k) => k + 1); }}
-          />
-        );
-      case 'world':
-        if (!selectedWorldId) return <div style={s.tabPlaceholder}>请选择一个世界观条目</div>;
-        return (
-          <WorldDetailPanel
-            entryId={selectedWorldId}
-            projectId={projectId}
-            worldStore={worldStore}
-            characterStore={characterStore}
-            customCategories={worldStore.listCustomCategories(projectId)}
-            onEdit={(entry) => { setEditingWorld(entry); setShowWorldDialog(true); }}
-            onDelete={(id) => { worldStore.deleteEntry(id); setSelectedWorldId(null); setPanelMode('none'); setRefreshKey((k) => k + 1); }}
-          />
-        );
-      case 'timeline':
-        if (!selectedTimelineId) return <div style={s.tabPlaceholder}>请选择一个时间节点</div>;
-        return (
-          <TimelineDetailPanel
-            timelinePointId={selectedTimelineId}
-            projectId={projectId}
-            timelineStore={timelineStore}
-            chapterStore={chapterStore}
-            characterStore={characterStore}
-            onEdit={(point) => { setEditingTimeline(point); setShowTimelineDialog(true); }}
-            onDelete={(id) => { timelineStore.deleteTimelinePoint(id); setSelectedTimelineId(null); setPanelMode('none'); setRefreshKey((k) => k + 1); }}
-          />
-        );
-      case 'consistency':
-        return (
-          <ConsistencyPanel
-            issues={consistencyIssues}
-            fixedCount={consistencyFixedCount}
-            onApply={handleApplyConsistency}
-            onIgnore={handleIgnoreConsistency}
-          />
-        );
-      case 'version-history':
-        return (
-          <VersionHistoryPanel
-            projectId={projectId}
-            snapshotStore={snapshotStore}
-            onRestore={handleRestoreSnapshot}
-          />
-        );
-      default:
-        return <div style={{ padding: 'var(--spacing-sm)', color: 'var(--color-text-secondary)', fontSize: 13 }}>选择侧边栏项目查看详情</div>;
-    }
-  };
-
-  /* ── center content ── */
-  const renderCenter = () => {
-    switch (viewMode) {
-      case 'graph':
-        return (
-          <RelationshipGraphPage
-            projectId={projectId}
-            characters={characterStore.listCharacters(projectId)}
-            relationships={relationshipStore.listRelationships(projectId)}
-            timelinePoints={timelineStore.listTimelinePoints(projectId)}
-            characterStore={characterStore}
-            relationshipStore={relationshipStore}
-            timelineStore={timelineStore}
-            onEditCharacter={(ch) => { setEditingCharacter(ch); setShowCharDialog(true); }}
-            onDeleteCharacter={(id) => { characterStore.deleteCharacter(id); }}
-          />
-        );
-      case 'timeline':
-        return <div style={s.tabPlaceholder}>时间线视图（使用左侧时间线 Tab 管理）</div>;
-      case 'plot':
-        return <div style={s.tabPlaceholder}>情节视图（使用左侧情节线索 Tab 管理）</div>;
-      case 'writing':
-      default:
-        return (
-          <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-            <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} />
-            <AIAssistantPanel
-              open={showAIPanel}
-              onClose={() => setShowAIPanel(false)}
-              chapterId={selectedChapterId}
-              projectId={projectId}
-              aiStore={aiStore}
-              aiEngine={aiEngine}
-              onAccept={handleAIAccept}
-              onOpenSettings={() => { setShowAIPanel(false); setShowAIConfig(true); }}
-            />
-          </div>
-        );
-    }
-  };
-
-  const viewButtons: { key: ViewMode; label: string }[] = [
-    { key: 'writing', label: '写作' },
-    { key: 'graph', label: '关系图谱' },
-    { key: 'timeline', label: '时间线' },
-    { key: 'plot', label: '情节' },
-  ];
-
   /* ── focus mode ── */
   if (focusMode) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        <div style={s.focusToolbar}>
-          <span style={s.projectName}>{projectName}</span>
-          <span style={s.spacer} />
-          <button style={s.toolBtn} onClick={toggleFocus}>退出专注模式</button>
+      <EditorStoreProvider
+        projectStore={projectStore}
+        projectId={projectId}
+        projectName={projectName}
+        chapterStore={chapterStore}
+        characterStore={characterStore}
+        worldStore={worldStore}
+        timelineStore={timelineStore}
+        plotStore={plotStore}
+        relationshipStore={relationshipStore}
+        aiStore={aiStore}
+        themeStore={themeStore}
+        snapshotStore={snapshotStore}
+        consistencyEngine={consistencyEngine}
+        exportEngine={exportEngine}
+        aiEngine={aiEngine}
+        eventBus={eventBus}
+      >
+        <div style={s.focusWrapper}>
+          <div style={s.focusToolbar}>
+            <span style={s.projectName}>{projectName}</span>
+            <span style={s.spacer} />
+            <button style={s.toolBtn} onClick={toggleFocus}>退出专注模式</button>
+          </div>
+          <div style={s.focusEditor}>
+            <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} />
+          </div>
         </div>
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} />
-        </div>
-      </div>
+      </EditorStoreProvider>
     );
   }
 
   /* ── normal mode ── */
   return (
-    <>
+    <EditorStoreProvider
+      projectStore={projectStore}
+      projectId={projectId}
+      projectName={projectName}
+      chapterStore={chapterStore}
+      characterStore={characterStore}
+      worldStore={worldStore}
+      timelineStore={timelineStore}
+      plotStore={plotStore}
+      relationshipStore={relationshipStore}
+      aiStore={aiStore}
+      themeStore={themeStore}
+      snapshotStore={snapshotStore}
+      consistencyEngine={consistencyEngine}
+      exportEngine={exportEngine}
+      aiEngine={aiEngine}
+      eventBus={eventBus}
+    >
       <EditorLayout
         toolbar={
-          <Toolbar>
-            {/* Back */}
-            <button onClick={handleBack}
-              style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 16 }}
-              title="返回项目列表">←</button>
-
-            {/* Project name */}
-            <span style={s.projectName}>{projectName}</span>
-            <span style={s.separator} />
-
-            {/* Save */}
-            <button style={s.toolBtn}
-              onClick={async () => { try { await projectStore.saveProject(); showToast('success', '已保存'); } catch { showToast('error', '保存失败'); } }}>
-              保存
-            </button>
-            <span style={s.autoSaveHint}>已自动保存</span>
-
-            <span style={s.separator} />
-
-            {/* View switch */}
-            <div style={s.viewGroup}>
-              {viewButtons.map((v, i) => (
-                <button key={v.key}
-                  style={{
-                    ...s.viewBtn,
-                    ...(viewMode === v.key ? s.viewBtnActive : {}),
-                    ...(i === viewButtons.length - 1 ? s.viewBtnLast : {}),
-                  }}
-                  onClick={() => setViewMode(v.key)}>
-                  {v.label}
-                </button>
-              ))}
-            </div>
-
-            <span style={s.spacer} />
-
-            {/* Consistency check */}
-            <button style={s.toolBtn} onClick={handleConsistencyCheck}>一致性检查</button>
-
-            {/* Snapshot */}
-            <button style={s.toolBtn} onClick={handleSaveSnapshot}>保存快照</button>
-            <button
-              style={{ ...s.toolBtn, ...(panelMode === 'version-history' ? s.toolBtnActive : {}) }}
-              onClick={() => setPanelMode(panelMode === 'version-history' ? 'none' : 'version-history')}
-            >
-              版本历史
-            </button>
-
-            {/* Export */}
-            <div style={s.exportDropdown}>
-              <button style={s.toolBtn} onClick={() => setShowExportMenu(!showExportMenu)}>
-                导出 ▾
-              </button>
-              {showExportMenu && (
-                <div style={s.exportMenu} onMouseLeave={() => setShowExportMenu(false)}>
-                  <button style={s.exportMenuItem} onClick={() => { setShowExportMenu(false); setShowExportDialog(true); }}>
-                    导出设置...
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* AI */}
-            <button style={{ ...s.toolBtn, ...(showAIPanel ? s.toolBtnActive : {}) }}
-              onClick={() => setShowAIPanel(!showAIPanel)}>
-              AI 辅助
-            </button>
-            <button style={s.toolBtn} onClick={() => setShowAIConfig(true)} title="AI 设置">⚙</button>
-
-            {/* Focus mode */}
-            <button style={s.toolBtn} onClick={toggleFocus}>专注模式</button>
-
-            {/* Theme toggle */}
-            <button style={s.toolBtn} onClick={handleThemeToggle} title={effectiveTheme === 'light' ? '切换到暗色模式' : '切换到亮色模式'}>
-              {effectiveTheme === 'light' ? '🌙' : '☀️'}
-            </button>
-          </Toolbar>
+          <EditorToolbar
+            projectName={projectName}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            focusMode={focusMode}
+            onToggleFocus={toggleFocus}
+            effectiveTheme={effectiveTheme}
+            onThemeToggle={handleThemeToggle}
+            panelMode={panelMode}
+            onPanelModeChange={setPanelMode}
+            showAIPanel={showAIPanel}
+            onToggleAIPanel={() => setShowAIPanel(!showAIPanel)}
+            onOpenAIConfig={() => setShowAIConfig(true)}
+            onConsistencyCheck={handleConsistencyCheck}
+            onSaveSnapshot={handleSaveSnapshot}
+            onSave={handleSave}
+            showExportMenu={showExportMenu}
+            onToggleExportMenu={() => setShowExportMenu(!showExportMenu)}
+            onOpenExportDialog={() => setShowExportDialog(true)}
+            onBack={handleBack}
+          />
         }
         sidebar={
           <SidebarTabs>
             {(activeTab) => renderTabContent(activeTab)}
           </SidebarTabs>
         }
-        panel={renderPanel()}
+        panel={
+          <ErrorBoundary fallbackTitle="面板区域出错了">
+            <EditorRightPanel
+              panelMode={panelMode}
+              selectedCharId={selectedCharId}
+              selectedWorldId={selectedWorldId}
+              selectedTimelineId={selectedTimelineId}
+              consistencyIssues={consistencyIssues}
+              consistencyFixedCount={consistencyFixedCount}
+              onEditCharacter={handleEditCharacter}
+              onDeleteCharacter={handleDeleteCharacter}
+              onEditWorld={handleEditWorld}
+              onDeleteWorld={handleDeleteWorld}
+              onEditTimeline={handleEditTimeline}
+              onDeleteTimeline={handleDeleteTimeline}
+              onApplyConsistency={handleApplyConsistency}
+              onIgnoreConsistency={handleIgnoreConsistency}
+              onRestoreSnapshot={handleRestoreSnapshot}
+            />
+          </ErrorBoundary>
+        }
       >
-        {renderCenter()}
+        <ErrorBoundary fallbackTitle="编辑器区域出错了">
+          <EditorContent
+            viewMode={viewMode}
+            selectedChapterId={selectedChapterId}
+            editorRef={editorRef}
+            showAIPanel={showAIPanel}
+            onCloseAIPanel={() => setShowAIPanel(false)}
+            onOpenAIConfig={() => { setShowAIPanel(false); setShowAIConfig(true); }}
+            onAIAccept={handleAIAccept}
+            effectiveTheme={effectiveTheme}
+            onEditCharacter={handleEditCharacter}
+            onDeleteCharacter={(id) => { characterStore.deleteCharacter(id); }}
+          />
+        </ErrorBoundary>
       </EditorLayout>
 
       {/* Dialogs */}
-      <ExportDialog
-        open={showExportDialog}
-        projectName={projectName}
-        onConfirm={handleExport}
-        onCancel={() => setShowExportDialog(false)}
+      <DialogManager
+        showCharDialog={showCharDialog}
+        editingCharacter={editingCharacter}
+        onCharConfirm={handleCharConfirm}
+        onCharCancel={handleCharCancel}
+        showWorldDialog={showWorldDialog}
+        editingWorld={editingWorld}
+        onWorldConfirm={handleWorldConfirm}
+        onWorldCancel={handleWorldCancel}
+        showTimelineDialog={showTimelineDialog}
+        editingTimeline={editingTimeline}
+        onTimelineConfirm={handleTimelineConfirm}
+        onTimelineCancel={handleTimelineCancel}
+        showPlotDialog={showPlotDialog}
+        editingPlot={editingPlot}
+        onPlotConfirm={handlePlotConfirm}
+        onPlotCancel={handlePlotCancel}
+        showExportDialog={showExportDialog}
+        onExportConfirm={handleExport}
+        onExportCancel={() => setShowExportDialog(false)}
+        showAIConfig={showAIConfig}
+        onAIConfigClose={() => setShowAIConfig(false)}
       />
-      <AIConfigDialog
-        open={showAIConfig}
-        aiStore={aiStore}
-        onClose={() => setShowAIConfig(false)}
-      />
-      {showCharDialog && (
-        <CharacterDialog
-          open={showCharDialog}
-          initialData={editingCharacter ?? undefined}
-          onConfirm={(data) => {
-            if (editingCharacter) {
-              characterStore.updateCharacter(editingCharacter.id, data);
-            } else {
-              characterStore.createCharacter(projectId, data);
-            }
-            setShowCharDialog(false);
-            setEditingCharacter(null);
-            setRefreshKey((k) => k + 1);
-          }}
-          onCancel={() => { setShowCharDialog(false); setEditingCharacter(null); }}
-        />
-      )}
-      {showWorldDialog && (
-        <WorldDialog
-          open={showWorldDialog}
-          initialData={editingWorld ?? undefined}
-          projectId={projectId}
-          characters={characterStore.listCharacters(projectId)}
-          customCategories={worldStore.listCustomCategories(projectId)}
-          onConfirm={(data) => {
-            if (editingWorld) {
-              worldStore.updateEntry(editingWorld.id, data);
-            } else {
-              worldStore.createEntry(data);
-            }
-            setShowWorldDialog(false);
-            setEditingWorld(null);
-            setRefreshKey((k) => k + 1);
-          }}
-          onCancel={() => { setShowWorldDialog(false); setEditingWorld(null); }}
-          onAddCustomCategory={(label) => {
-            worldStore.addCustomCategory(projectId, label);
-            setRefreshKey((k) => k + 1);
-          }}
-        />
-      )}
-      {showTimelineDialog && (
-        <TimelineDialog
-          open={showTimelineDialog}
-          initialData={editingTimeline ?? undefined}
-          projectId={projectId}
-          chapters={chapterStore.listChapters(projectId)}
-          characters={characterStore.listCharacters(projectId)}
-          onConfirm={(data) => {
-            if (editingTimeline) {
-              timelineStore.updateTimelinePoint(editingTimeline.id, data);
-            } else {
-              timelineStore.createTimelinePoint(data);
-            }
-            setShowTimelineDialog(false);
-            setEditingTimeline(null);
-            setRefreshKey((k) => k + 1);
-          }}
-          onCancel={() => { setShowTimelineDialog(false); setEditingTimeline(null); }}
-        />
-      )}
-      {showPlotDialog && (
-        <PlotDialog
-          open={showPlotDialog}
-          initialData={editingPlot ?? undefined}
-          projectId={projectId}
-          chapters={chapterStore.listChapters(projectId)}
-          onConfirm={(data) => {
-            if (editingPlot) {
-              plotStore.updateThread(editingPlot.id, data);
-            } else {
-              plotStore.createThread(data);
-            }
-            setShowPlotDialog(false);
-            setEditingPlot(null);
-            setRefreshKey((k) => k + 1);
-          }}
-          onCancel={() => { setShowPlotDialog(false); setEditingPlot(null); }}
-        />
-      )}
-    </>
+    </EditorStoreProvider>
   );
 }
+
+export { EditorPage };
+export default EditorPage;

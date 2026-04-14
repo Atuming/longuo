@@ -38,6 +38,8 @@ export { DEFAULT_TYPOGRAPHY } from './export';
 
 // AI 辅助写作
 export type { AIProvider, PromptTemplate, AIConfig, PackedContext, AIGenerateRequest, AIGenerateResult } from './ai';
+export type { WritingSkill, SkillParameter, ContextHint, ContextSignals, ScoredSkill } from './ai';
+export { BUILT_IN_SKILLS, loadBuiltInSkills } from './skill-defaults';
 
 // 事件总线
 export type { EventBus } from './event-bus';
