@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import type { CharacterRelationship } from '../../types/relationship';
 import type { Character } from '../../types/character';
 import type { TimelinePoint } from '../../types/timeline';
@@ -53,17 +53,18 @@ export function RelationshipDialog({
     startTimelinePointId: '', strength: 5,
   });
 
-  const [prevOpen, setPrevOpen] = useState(open);
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-    if (open) {
+  const [prevOpen, setPrevOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && !prevOpen) {
       setForm(initialData ? { ...initialData } : {
         projectId, sourceCharacterId, targetCharacterId: '',
         relationshipType: 'friend', customTypeName: '', description: '',
         startTimelinePointId: timelinePoints[0]?.id || '', strength: 5,
       });
     }
-  }
+    setPrevOpen(open);
+  }, [open, initialData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const otherCharacters = characters.filter((c) => c.id !== sourceCharacterId);
 

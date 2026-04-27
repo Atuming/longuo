@@ -37,6 +37,7 @@ import { createEventBus } from '../lib/event-bus';
 import { createConsistencyEngine } from '../lib/consistency-engine';
 import { createExportEngine } from '../lib/export-engine';
 import { createAIAssistantEngine } from '../lib/ai-assistant-engine';
+import { createTagStore } from '../stores/tag-store';
 
 /* ── focus-mode styles ── */
 const s: Record<string, CSSProperties> = {
@@ -68,15 +69,16 @@ function EditorPage({ projectStore }: EditorPageProps) {
 
   /* ── stores & engines (created once) ── */
   const eventBus = useMemo(() => createEventBus(), []);
-  const chapterStore = useMemo(() => createChapterStore(), []);
+  const chapterStore = useMemo(() => createChapterStore({ eventBus }), [eventBus]);
   const characterStore = useMemo(() => createCharacterStore(eventBus), [eventBus]);
-  const worldStore = useMemo(() => createWorldStore(), []);
+  const worldStore = useMemo(() => createWorldStore({ eventBus }), [eventBus]);
   const timelineStore = useMemo(() => createTimelineStore({ eventBus }), [eventBus]);
-  const plotStore = useMemo(() => createPlotStore(), []);
+  const plotStore = useMemo(() => createPlotStore({ eventBus }), [eventBus]);
   const relationshipStore = useMemo(() => createRelationshipStore({ eventBus }), [eventBus]);
   const aiStore = useMemo(() => createAIAssistantStore(), []);
   const themeStore = useMemo(() => createThemeStore(), []);
   const snapshotStore = useMemo(() => createSnapshotStore(), []);
+  const tagStore = useMemo(() => createTagStore(eventBus), [eventBus]);
   const consistencyEngine = useMemo(() => createConsistencyEngine(), []);
 
   useEffect(() => {
@@ -257,8 +259,9 @@ function EditorPage({ projectStore }: EditorPageProps) {
       timelinePoints: timelineStore.listTimelinePoints(projectId),
       worldEntries: worldStore.listEntries(projectId),
       plotThreads: plotStore.listThreads(projectId),
+      tagData: tagStore.exportData(projectId),
     };
-  }, [project, projectId, projectName, chapterStore, characterStore, relationshipStore, timelineStore, worldStore, plotStore]);
+  }, [project, projectId, projectName, chapterStore, characterStore, relationshipStore, timelineStore, worldStore, plotStore, tagStore]);
 
   const handleSaveSnapshot = useCallback(() => {
     const note = window.prompt('请输入快照备注：', '');
@@ -398,6 +401,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
           <OutlineTab
             projectId={projectId}
             chapterStore={chapterStore}
+            tagStore={tagStore}
             selectedChapterId={selectedChapterId}
             onSelectChapter={setSelectedChapterId}
           />

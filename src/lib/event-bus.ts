@@ -1,27 +1,27 @@
-import type { EventBus } from '../types/event-bus';
-import type { TimelineEvent } from '../types/timeline';
+import type { EventBus, AppEvent } from '../types/event-bus';
 
 /**
  * 创建一个事件总线实例。
- * 支持 timeline:created, timeline:updated, timeline:deleted 事件的发布/订阅。
+ * 支持 timeline:created, timeline:updated, timeline:deleted,
+ * character:deleted, chapter:deleted 事件的发布/订阅。
  */
 export function createEventBus(): EventBus {
-  const listeners = new Map<TimelineEvent['type'], Set<(event: TimelineEvent) => void>>();
+  const listeners = new Map<AppEvent['type'], Set<(event: AppEvent) => void>>();
 
   return {
-    emit(event: TimelineEvent): void {
+    emit(event: AppEvent): void {
       const handlers = listeners.get(event.type);
       if (!handlers) return;
       for (const handler of handlers) {
         try {
           handler(event);
-        } catch {
-          // 捕获异常，不影响其他处理器执行
+        } catch (error) {
+          console.error(`EventBus: listener for "${event.type}" threw an error`, error);
         }
       }
     },
 
-    on(type: TimelineEvent['type'], handler: (event: TimelineEvent) => void): () => void {
+    on(type: AppEvent['type'], handler: (event: AppEvent) => void): () => void {
       let handlers = listeners.get(type);
       if (!handlers) {
         handlers = new Set();

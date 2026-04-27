@@ -6,6 +6,7 @@ import type { TimelinePoint } from './timeline';
 import type { WorldEntry, CustomWorldCategory } from './world';
 import type { PlotThread } from './plot';
 import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill } from './ai';
+import type { Tag, TagData } from './tag';
 
 /** 项目 Store */
 export interface ProjectStore {
@@ -125,4 +126,27 @@ export interface AIAssistantStore {
   resetSkill(id: string): void;
   reorderSkills(orderedIds: string[]): void;
   setBuiltInSkills(skills: WritingSkill[]): void;
+}
+
+/** 标签 Store */
+export interface TagStore {
+  // 标签 CRUD
+  createTag(projectId: string, name: string, color?: string): Tag;
+  getTag(id: string): Tag | undefined;
+  listTags(projectId: string): Tag[];
+  updateTag(id: string, updates: Partial<Pick<Tag, 'name' | 'color'>>): void;
+  deleteTag(id: string): void;
+
+  // 章节-标签关联
+  addTagToChapter(chapterId: string, tagId: string): void;
+  removeTagFromChapter(chapterId: string, tagId: string): void;
+  getTagsForChapter(chapterId: string): Tag[];
+  getChapterIdsForTag(tagId: string): string[];
+
+  // 初始化预设标签
+  ensurePresetTags(projectId: string): void;
+
+  // 序列化/反序列化
+  exportData(projectId: string): TagData;
+  importData(data: TagData): void;
 }

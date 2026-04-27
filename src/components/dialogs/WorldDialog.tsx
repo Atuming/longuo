@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import type { WorldEntry, CustomWorldCategory } from '../../types/world';
 import { BUILT_IN_CATEGORIES } from '../../types/world';
 import type { Character } from '../../types/character';
@@ -49,15 +49,16 @@ export function WorldDialog({ open, initialData, projectId, characters, customCa
   const [showAddCustom, setShowAddCustom] = useState(false);
   const [newCustomLabel, setNewCustomLabel] = useState('');
 
-  const [prevOpen, setPrevOpen] = useState(open);
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-    if (open) {
+  const [prevOpen, setPrevOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && !prevOpen) {
       setForm(initialData ? { ...initialData } : { projectId, type: 'location', name: '', description: '', category: '', associatedCharacterIds: [] });
       setShowAddCustom(false);
       setNewCustomLabel('');
     }
-  }
+    setPrevOpen(open);
+  }, [open, initialData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleCharacter = (cid: string) => {
     const ids = form.associatedCharacterIds.includes(cid)

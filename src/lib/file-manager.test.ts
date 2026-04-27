@@ -68,6 +68,32 @@ describe('serialize / deserialize', () => {
     expect(restored.aiConfig).toEqual(data.aiConfig);
   });
 
+  it('should preserve optional tagData when present', () => {
+    const data = makeFileData({
+      tagData: {
+        tags: [
+          { id: 'tag-1', projectId: 'p1', name: '草稿', color: '#A0AEC0' },
+          { id: 'tag-2', projectId: 'p1', name: '已完稿', color: '#48BB78' },
+        ],
+        chapterTagMap: {
+          'ch-1': ['tag-1', 'tag-2'],
+          'ch-2': ['tag-1'],
+        },
+      },
+    });
+    const restored = deserialize(serialize(data));
+    expect(restored.tagData).toEqual(data.tagData);
+  });
+
+  it('should handle old project files without tagData (backward compatibility)', () => {
+    const data = makeFileData();
+    // Ensure tagData is not set
+    delete (data as Record<string, unknown>)['tagData'];
+    const json = serialize(data);
+    const restored = deserialize(json);
+    expect(restored.tagData).toBeUndefined();
+  });
+
   it('should throw on invalid JSON', () => {
     expect(() => deserialize('not json')).toThrow();
   });

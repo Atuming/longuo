@@ -1,8 +1,12 @@
 import { useState, useRef, useEffect, useMemo, useCallback, type CSSProperties } from 'react';
 import type { Chapter } from '../../types/chapter';
-import type { ChapterStore } from '../../types/stores';
+import type { ChapterStore, TagStore } from '../../types/stores';
 import { Button } from '../ui/Button';
+import { TagBadges } from './TagBadges';
+import { TagFilter } from './TagFilter';
+import { TagPopover } from './TagPopover';
 import { calculateDropPosition, isValidDrop, type DropInfo } from './outline-drag-utils';
+import { filterChaptersByTags } from './outline-filter-utils';
 
 /* ── styles ── */
 const styles: Record<string, CSSProperties> = {
@@ -87,11 +91,12 @@ function buildTree(chapters: Chapter[]): Map<string | null, Chapter[]> {
 interface OutlineTabProps {
   projectId: string;
   chapterStore: ChapterStore;
+  tagStore?: TagStore;
   selectedChapterId?: string | null;
   onSelectChapter?: (id: string) => void;
 }
 
-export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelectChapter }: OutlineTabProps) {
+export function OutlineTab({ projectId, chapterStore, tagStore, selectedChapterId, onSelectChapter }: OutlineTabProps) {
   const derivedChapters = useMemo(() => chapterStore.listChapters(projectId), [chapterStore, projectId]);
   const [chapters, setChapters] = useState(derivedChapters);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -99,6 +104,8 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; chapterId: string } | null>(null);
   const [dropInfo, setDropInfo] = useState<DropInfo | null>(null);
   const [dragSourceId, setDragSourceId] = useState<string | null>(null);
+  const [filterTagIds, setFilterTagIds] = useState<Set<string>>(new Set());
+  const [tagPopover, setTagPopover] = useState<{ chapterId: string; x: number; y: number } | null>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
   // Sync chapters when chapterStore or projectId changes (render-phase update)
@@ -122,6 +129,41 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
   }, [contextMenu]);
 
   const tree = buildTree(chapters);
+
+  /* ── tag filter ── */
+  const handleToggleFilterTag = useCallback((tagId: string) => {
+    setFilterTagIds(prev => {
+      const next = new Set(prev);
+      if (next.has(tagId)) next.delete(tagId);
+      else next.add(tagId);
+      return next;
+    });
+  }, []);
+
+  const handleClearFilter = useCallback(() => {
+    setFilterTagIds(new Set());
+  }, []);
+
+  const handleTagPopoverClose = useCallback(() => {
+    setTagPopover(null);
+    refreshChapters();
+  }, []);
+
+  const chapterTagMap = useMemo(() => {
+    if (!tagStore) return new Map<string, Set<string>>();
+    const map = new Map<string, Set<string>>();
+    for (const ch of chapters) {
+      const tags = tagStore.getTagsForChapter(ch.id);
+      if (tags.length > 0) {
+        map.set(ch.id, new Set(tags.map(t => t.id)));
+      }
+    }
+    return map;
+  }, [tagStore, chapters]);
+
+  const visibleChapterIds = useMemo(() => {
+    return filterChaptersByTags(chapters, filterTagIds, chapterTagMap);
+  }, [chapters, filterTagIds, chapterTagMap]);
 
   /** Collect all descendant IDs of a given chapter */
   const getDescendantIds = useCallback((id: string): string[] => {
@@ -305,6 +347,8 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
 
   /* ── render tree node ── */
   const renderNode = (ch: Chapter, depth: number) => {
+    if (!visibleChapterIds.has(ch.id)) return null;
+
     const children = tree.get(ch.id);
     const hasChildren = children && children.length > 0;
     const isCollapsed = collapsed.has(ch.id);
@@ -363,6 +407,10 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
             <span style={styles.title}>{ch.title}</span>
           )}
 
+          {!isEditing && tagStore && (
+            <TagBadges tags={tagStore.getTagsForChapter(ch.id)} />
+          )}
+
           <span style={styles.wordCount}>{ch.wordCount}</span>
         </div>
 
@@ -375,6 +423,16 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
 
   return (
     <div style={styles.wrapper}>
+      {tagStore && (
+        <div style={{ padding: '0 var(--spacing-xs)' }}>
+          <TagFilter
+            tags={tagStore.listTags(projectId)}
+            selectedTagIds={filterTagIds}
+            onToggleTag={handleToggleFilterTag}
+            onClearFilter={handleClearFilter}
+          />
+        </div>
+      )}
       <div style={styles.tree}>
         {roots.length === 0 && (
           <div style={{ padding: 16, color: 'var(--color-text-secondary)', fontSize: 13, textAlign: 'center' }}>
@@ -390,6 +448,14 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
           <button style={styles.menuItem} onClick={() => { handleAddChild(contextMenu.chapterId); setContextMenu(null); }}>
             添加子章节
           </button>
+          {tagStore && (
+            <button style={styles.menuItem} onClick={() => {
+              setTagPopover({ chapterId: contextMenu.chapterId, x: contextMenu.x, y: contextMenu.y });
+              setContextMenu(null);
+            }}>
+              管理标签
+            </button>
+          )}
           <button style={styles.menuItem} onClick={() => { setEditingId(contextMenu.chapterId); setContextMenu(null); }}>
             重命名
           </button>
@@ -397,6 +463,17 @@ export function OutlineTab({ projectId, chapterStore, selectedChapterId, onSelec
             删除
           </button>
         </div>
+      )}
+
+      {/* tag popover */}
+      {tagPopover && tagStore && (
+        <TagPopover
+          projectId={projectId}
+          chapterId={tagPopover.chapterId}
+          tagStore={tagStore}
+          position={{ x: tagPopover.x, y: tagPopover.y }}
+          onClose={handleTagPopoverClose}
+        />
       )}
 
       {/* footer buttons */}

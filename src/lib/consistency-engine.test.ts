@@ -157,6 +157,66 @@ describe('ConsistencyEngine', () => {
     });
   });
 
+  // ── 边界场景：需求 9.1 空内容 ──
+  describe('boundary: empty content (Req 9.1)', () => {
+    it('should return empty array for empty string with multiple characters', () => {
+      const chars = [makeCharacter('张三'), makeCharacter('李四', ['小李'])];
+      const issues = engine.checkChapter('', chars);
+      expect(issues).toEqual([]);
+    });
+
+    it('should not throw for empty string content', () => {
+      const chars = [makeCharacter('王小明', ['小明'])];
+      expect(() => engine.checkChapter('', chars)).not.toThrow();
+    });
+  });
+
+  // ── 边界场景：需求 9.2 无角色 ──
+  describe('boundary: no characters (Req 9.2)', () => {
+    it('should return empty array when characters array is empty and content has text', () => {
+      const issues = engine.checkChapter('这是一段很长的小说内容，包含各种文字', []);
+      expect(issues).toEqual([]);
+    });
+
+    it('should return empty array when all character names are empty strings', () => {
+      const chars = [makeCharacter('', []), makeCharacter('', [''])];
+      const issues = engine.checkChapter('一些内容', chars);
+      expect(issues).toEqual([]);
+    });
+  });
+
+  // ── 边界场景：需求 9.3 单字符角色名 ──
+  describe('boundary: single-character names (Req 9.3)', () => {
+    it('should skip single-character name detection', () => {
+      const chars = [makeCharacter('张')];
+      const issues = engine.checkChapter('王走了过来，李也来了', chars);
+      expect(issues).toEqual([]);
+    });
+
+    it('should skip single-character alias detection', () => {
+      const chars = [makeCharacter('张三', ['张'])];
+      // '张' alias is 1 char, should be skipped; '张三' is 2 chars, exact match should not be flagged
+      const issues = engine.checkChapter('张三走了过来，李也来了', chars);
+      expect(issues).toEqual([]);
+    });
+
+    it('should still detect 2-character names while skipping 1-character names', () => {
+      const chars = [makeCharacter('张', []), makeCharacter('李四')];
+      // '张' (1 char) should be skipped, '李四' (2 chars) should be checked
+      // '李五' has edit distance 1 from '李四'
+      const issues = engine.checkChapter('李五走了过来', chars);
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0].foundText).toBe('李五');
+      expect(issues[0].suggestedName).toBe('李四');
+    });
+
+    it('should skip all characters when all names and aliases are single-character', () => {
+      const chars = [makeCharacter('张', ['李']), makeCharacter('王', ['赵'])];
+      const issues = engine.checkChapter('这是一段包含各种单字的内容', chars);
+      expect(issues).toEqual([]);
+    });
+  });
+
   describe('applySuggestion', () => {
     it('should replace text at the specified offset', () => {
       const content = '张四走了过来';

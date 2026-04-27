@@ -151,7 +151,20 @@ export function RelationshipGraphView({
       iteration++;
 
       const ns = nodesRef.current;
-      if (ns.length === 0) return;
+      if (ns.length <= 1) {
+        // 单个节点无需力模拟，直接居中放置
+        if (ns.length === 1) {
+          const width = svgRef.current?.clientWidth ?? 800;
+          const height = svgRef.current?.clientHeight ?? 600;
+          ns[0].x = width / 2;
+          ns[0].y = height / 2;
+          ns[0].vx = 0;
+          ns[0].vy = 0;
+          nodesRef.current = [...ns];
+          setNodes([...ns]);
+        }
+        return;
+      }
 
       const width = svgRef.current?.clientWidth ?? 800;
       const height = svgRef.current?.clientHeight ?? 600;

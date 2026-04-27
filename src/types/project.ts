@@ -5,6 +5,7 @@ import type { TimelinePoint } from './timeline';
 import type { CustomWorldCategory, WorldEntry } from './world';
 import type { PlotThread } from './plot';
 import type { AIConfig } from './ai';
+import type { TagData } from './tag';
 
 /** .novel 项目文件的完整数据结构 */
 export interface NovelFileData {
@@ -19,6 +20,7 @@ export interface NovelFileData {
   plotThreads: PlotThread[];
   aiConfig?: AIConfig;
   customWorldCategories?: CustomWorldCategory[];
+  tagData?: TagData;
 }
 
 /** 小说项目元数据 */

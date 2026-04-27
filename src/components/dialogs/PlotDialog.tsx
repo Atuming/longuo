@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import type { PlotThread } from '../../types/plot';
 import type { Chapter } from '../../types/chapter';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -40,13 +40,14 @@ export function PlotDialog({ open, initialData, projectId, chapters, onConfirm, 
     projectId, name: '', description: '', status: 'pending', associatedChapterIds: [],
   });
 
-  const [prevOpen, setPrevOpen] = useState(open);
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-    if (open) {
+  const [prevOpen, setPrevOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && !prevOpen) {
       setForm(initialData ? { ...initialData } : { projectId, name: '', description: '', status: 'pending', associatedChapterIds: [] });
     }
-  }
+    setPrevOpen(open);
+  }, [open, initialData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleChapter = (cid: string) => {
     const ids = form.associatedChapterIds.includes(cid)

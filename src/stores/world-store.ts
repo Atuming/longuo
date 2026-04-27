@@ -1,6 +1,7 @@
 import type { WorldStore } from '../types/stores';
 import type { WorldEntry, CustomWorldCategory } from '../types/world';
 import { BUILT_IN_CATEGORIES, CUSTOM_CATEGORY_DEFAULT_COLOR } from '../types/world';
+import type { EventBus } from '../types/event-bus';
 
 /** 深拷贝一个 WorldEntry（防御性拷贝） */
 function cloneEntry(entry: WorldEntry): WorldEntry {
@@ -10,13 +11,33 @@ function cloneEntry(entry: WorldEntry): WorldEntry {
   };
 }
 
+export interface CreateWorldStoreOptions {
+  eventBus?: EventBus;
+}
+
 /**
  * 创建 WorldStore 实例。
  * 所有操作为同步内存操作，持久化由 ProjectStore 统一处理。
+ * 可选传入 EventBus 以订阅角色删除事件保持同步。
  */
-export function createWorldStore(): WorldStore {
+export function createWorldStore(options?: CreateWorldStoreOptions): WorldStore {
   const entries = new Map<string, WorldEntry>();
   const customCategories = new Map<string, CustomWorldCategory[]>();
+  const eventBus = options?.eventBus;
+
+  // 订阅角色删除事件，从所有 WorldEntry 的 associatedCharacterIds 中移除已删除角色 ID
+  if (eventBus) {
+    eventBus.on('character:deleted', (event) => {
+      if (event.type !== 'character:deleted') return;
+      const characterId = event.characterId;
+      for (const entry of entries.values()) {
+        const idx = entry.associatedCharacterIds.indexOf(characterId);
+        if (idx !== -1) {
+          entry.associatedCharacterIds.splice(idx, 1);
+        }
+      }
+    });
+  }
 
   return {
     createEntry(data: Omit<WorldEntry, 'id'>): WorldEntry {

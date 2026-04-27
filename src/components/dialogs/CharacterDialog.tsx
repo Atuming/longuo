@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import type { Character } from '../../types/character';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Input } from '../ui/Input';
@@ -36,10 +36,10 @@ export function CharacterDialog({ open, initialData, onConfirm, onCancel }: Char
   const [kvKey, setKvKey] = useState('');
   const [kvValue, setKvValue] = useState('');
 
-  const [prevOpen, setPrevOpen] = useState(open);
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-    if (open) {
+  const [prevOpen, setPrevOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && !prevOpen) {
       if (initialData) {
         const { id: _, projectId: __, ...rest } = initialData; // eslint-disable-line @typescript-eslint/no-unused-vars
         setForm(rest);
@@ -50,7 +50,8 @@ export function CharacterDialog({ open, initialData, onConfirm, onCancel }: Char
       setKvKey('');
       setKvValue('');
     }
-  }
+    setPrevOpen(open);
+  }, [open, initialData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAddAlias = () => {
     const trimmed = aliasInput.trim();

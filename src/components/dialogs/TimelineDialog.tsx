@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import type { TimelinePoint } from '../../types/timeline';
 import type { Chapter } from '../../types/chapter';
 import type { Character } from '../../types/character';
@@ -32,16 +32,17 @@ export function TimelineDialog({ open, initialData, projectId, chapters, charact
     associatedChapterIds: [], associatedCharacterIds: [],
   });
 
-  const [prevOpen, setPrevOpen] = useState(open);
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-    if (open) {
+  const [prevOpen, setPrevOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && !prevOpen) {
       setForm(initialData ? { ...initialData } : {
         projectId, label: '', description: '', sortOrder: 0,
         associatedChapterIds: [], associatedCharacterIds: [],
       });
     }
-  }
+    setPrevOpen(open);
+  }, [open, initialData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleChapter = (cid: string) => {
     const ids = form.associatedChapterIds.includes(cid)

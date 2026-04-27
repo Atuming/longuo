@@ -87,12 +87,17 @@ export function createCharacterStore(eventBus?: EventBus): CharacterStore {
     },
 
     deleteCharacter(id: string): void {
+      const existed = characters.has(id);
       characters.delete(id);
       // 级联删除该角色的所有快照
       for (const [key, snapshot] of snapshots) {
         if (snapshot.characterId === id) {
           snapshots.delete(key);
         }
+      }
+      // 通过 EventBus 通知其他 Store 清理引用
+      if (existed && eventBus) {
+        eventBus.emit({ type: 'character:deleted', characterId: id });
       }
     },
 

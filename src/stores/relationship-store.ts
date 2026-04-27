@@ -34,6 +34,17 @@ export function createRelationshipStore(options?: CreateRelationshipStoreOptions
         }
       }
     });
+
+    // 订阅角色删除事件，级联删除引用了该角色的关系
+    eventBus.on('character:deleted', (event) => {
+      if (event.type !== 'character:deleted') return;
+      const characterId = event.characterId;
+      for (const [id, rel] of relationships) {
+        if (rel.sourceCharacterId === characterId || rel.targetCharacterId === characterId) {
+          relationships.delete(id);
+        }
+      }
+    });
   }
 
   return {

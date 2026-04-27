@@ -20,6 +20,9 @@ export { BUILT_IN_CATEGORIES, CUSTOM_CATEGORY_DEFAULT_COLOR, getCategoryInfo } f
 // 情节线索
 export type { PlotThread } from './plot';
 
+// 标签
+export type { Tag, TagData } from './tag';
+
 // 一致性检查
 export type { ConsistencyIssue, ConsistencyCheckResult } from './consistency';
 
@@ -42,7 +45,7 @@ export type { WritingSkill, SkillParameter, ContextHint, ContextSignals, ScoredS
 export { BUILT_IN_SKILLS, loadBuiltInSkills } from './skill-defaults';
 
 // 事件总线
-export type { EventBus } from './event-bus';
+export type { EventBus, AppEvent, CharacterDeletedEvent, ChapterDeletedEvent } from './event-bus';
 
 // Store 接口
 export type {
@@ -54,6 +57,7 @@ export type {
   TimelineStore,
   PlotStore,
   AIAssistantStore,
+  TagStore,
 } from './stores';
 
 // 引擎接口

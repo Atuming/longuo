@@ -1,5 +1,6 @@
 import type { ChapterStore } from '../types/stores';
 import type { Chapter } from '../types/chapter';
+import type { EventBus } from '../types/event-bus';
 
 /**
  * 去除 Markdown 标记后计算字数。
@@ -54,11 +55,17 @@ export function countWords(content: string): number {
   return count;
 }
 
+export interface CreateChapterStoreOptions {
+  eventBus?: EventBus;
+}
+
 /**
  * 创建 ChapterStore 实例。
  * 所有操作为同步内存操作，持久化由 ProjectStore 统一处理。
+ * 可选传入 EventBus，删除章节时发出 chapter:deleted 事件。
  */
-export function createChapterStore(): ChapterStore {
+export function createChapterStore(options?: CreateChapterStoreOptions): ChapterStore {
+  const eventBus = options?.eventBus;
   const chapters: Map<string, Chapter> = new Map();
 
   /**
@@ -164,12 +171,17 @@ export function createChapterStore(): ChapterStore {
 
     deleteChapter(id: string): void {
       const descendantIds = collectDescendantIds(id);
+      const allDeletedIds = [id, ...descendantIds];
       // 删除所有后代
       for (const did of descendantIds) {
         chapters.delete(did);
       }
       // 删除自身
-      chapters.delete(id);
+      const existed = chapters.delete(id);
+      // 通过 EventBus 通知其他 Store 清理引用
+      if ((existed || descendantIds.length > 0) && eventBus) {
+        eventBus.emit({ type: 'chapter:deleted', chapterIds: allDeletedIds });
+      }
     },
 
     reorderChapter(id: string, newSortOrder: number, newParentId?: string | null): void {

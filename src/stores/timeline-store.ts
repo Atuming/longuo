@@ -28,6 +28,31 @@ export function createTimelineStore(options?: CreateTimelineStoreOptions): Timel
   const getSnapshotCount = options?.getSnapshotCount;
   const getRelationshipCount = options?.getRelationshipCount;
 
+  // 订阅角色删除事件，从所有 TimelinePoint 的 associatedCharacterIds 中移除已删除角色 ID
+  if (eventBus) {
+    eventBus.on('character:deleted', (event) => {
+      if (event.type !== 'character:deleted') return;
+      const characterId = event.characterId;
+      for (const point of points.values()) {
+        const idx = point.associatedCharacterIds.indexOf(characterId);
+        if (idx !== -1) {
+          point.associatedCharacterIds.splice(idx, 1);
+        }
+      }
+    });
+
+    // 订阅章节删除事件，从所有 TimelinePoint 的 associatedChapterIds 中移除已删除章节 ID
+    eventBus.on('chapter:deleted', (event) => {
+      if (event.type !== 'chapter:deleted') return;
+      const deletedIds = new Set(event.chapterIds);
+      for (const point of points.values()) {
+        point.associatedChapterIds = point.associatedChapterIds.filter(
+          (id) => !deletedIds.has(id),
+        );
+      }
+    });
+  }
+
   return {
     createTimelinePoint(data: Omit<TimelinePoint, 'id'>): TimelinePoint {
       const point: TimelinePoint = {
