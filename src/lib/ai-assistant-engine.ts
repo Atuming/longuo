@@ -16,6 +16,7 @@ import type {
   ScoredSkill,
   ContextSignals,
 } from '../types/ai';
+import { BUILT_IN_CATEGORIES } from '../types/world';
 
 export interface AIAssistantEngineDeps {
   chapterStore: ChapterStore;
@@ -285,7 +286,11 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         stream: !!onChunk,
       });
 
-      // 4. 超时控制合并到同一个 controller
+      // 4. 超时控制：连接阶段使用 provider.timeoutMs
+      //      流式接收阶段改用数据间隔超时（30秒无新数据则中断）
+      const STREAM_IDLE_TIMEOUT_MS = 30000;
+      let streamIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
       const timeoutId = setTimeout(() => {
         if (activeRequestId === requestId) {
           controller.abort();
@@ -332,10 +337,24 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
 
+          // 启动流式数据间隔超时
+          const resetStreamIdleTimer = () => {
+            if (streamIdleTimer) clearTimeout(streamIdleTimer);
+            streamIdleTimer = setTimeout(() => {
+              if (activeRequestId === requestId) {
+                controller.abort();
+              }
+            }, STREAM_IDLE_TIMEOUT_MS);
+          };
+          resetStreamIdleTimer();
+
           try {
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
+
+              // 收到数据，重置间隔超时
+              resetStreamIdleTimer();
 
               const text = decoder.decode(value, { stream: true });
               // 解析 SSE 格式
@@ -359,11 +378,14 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
             }
           } catch {
             // 流式中断，保留已接收内容
+            if (streamIdleTimer) clearTimeout(streamIdleTimer);
             if (fullContent) {
               return { success: true, content: fullContent };
             }
             return { success: false, error: '流式响应中断，未接收到有效内容。' };
           }
+
+          if (streamIdleTimer) clearTimeout(streamIdleTimer);
 
           // 请求正常完成后清理闭包状态
           if (activeRequestId === requestId) {
@@ -476,6 +498,200 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
 
       scored.sort((a, b) => b.score - a.score);
       return scored;
+    },
+
+    async extractWorldEntries(
+      text: string,
+      onChunk?: (chunk: string) => void,
+    ): Promise<AIGenerateResult> {
+      const categoryList = BUILT_IN_CATEGORIES.map((c) => `${c.key}（${c.label}）`).join('、');
+
+      const systemPrompt =
+        '你是一个小说资料提取助手。你的任务是从给定的文本中同时提取两类信息：角色和世界观设定。' +
+        '输出严格的 JSON 对象格式，不要包含任何其他文字说明。' +
+        'JSON 结构如下：{"characters":[...],"worldEntries":[...]}\n' +
+        'characters 数组中每个元素包含：name（姓名）、aliases（别名列表，字符串数组）、appearance（外貌描写）、personality（性格特点）、backstory（背景故事）。' +
+        'worldEntries 数组中每个元素包含：name（名称）、type（分类 key）、description（详细描述）。' +
+        `worldEntries 的 type 取值：${categoryList}。` +
+        '重要区分：具体的有名字的个体（如"张三""李长老"）归入 characters；抽象设定（如"青云门""灵石""修仙体系"）归入 worldEntries。' +
+        '种族分类只用于物种大类（如"人族""妖族"），不要把具体角色放入种族。' +
+        '如果某一类没有提取到结果，对应数组为空。' +
+        '示例输出：{"characters":[{"name":"张三","aliases":["三哥"],"appearance":"身高八尺，剑眉星目","personality":"沉稳内敛，重情重义","backstory":"青云门内门弟子，幼年丧父"}],"worldEntries":[{"name":"青云门","type":"faction","description":"修仙界第一大宗门"},{"name":"灵石","type":"economy","description":"修仙界通用货币"}]}';
+
+      const userPrompt = `请从以下文本中同时提取角色信息和世界观设定：\n\n${text}`;
+
+      // 生成唯一请求 ID
+      const requestId = crypto.randomUUID();
+
+      // 自动取消上一个活跃请求
+      if (activeController) {
+        activeController.abort();
+      }
+
+      const controller = new AbortController();
+      activeRequestId = requestId;
+      activeController = controller;
+
+      const provider = aiStore.getActiveProvider();
+      if (!provider) {
+        return { success: false, error: 'AI 模型未配置，请前往设置页面配置 AI 模型提供商。' };
+      }
+
+      const validation = this.validateConfig(provider);
+      if (!validation.valid) {
+        return { success: false, error: `AI 配置无效：${validation.errors.join('；')}` };
+      }
+
+      const body = JSON.stringify({
+        model: provider.modelName,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        stream: !!onChunk,
+      });
+
+      // 超时控制：连接阶段使用 provider.timeoutMs
+      //      流式接收阶段改用数据间隔超时（30秒无新数据则中断）
+      const STREAM_IDLE_TIMEOUT_MS = 30000;
+      let streamIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const timeoutId = setTimeout(() => {
+        if (activeRequestId === requestId) {
+          controller.abort();
+        }
+      }, provider.timeoutMs);
+
+      try {
+        const response = await fetch(provider.apiEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${provider.apiKey}`,
+          },
+          body,
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const statusMessages: Record<number, string> = {
+            401: 'API Key 无效或已过期，请检查配置。',
+            403: 'API Key 无效或已过期，请检查配置。',
+            429: '请求过于频繁，请稍后重试。',
+          };
+          const errorMsg =
+            statusMessages[response.status] ??
+            (response.status >= 500
+              ? 'AI 服务暂时不可用，请稍后重试。'
+              : `请求失败（HTTP ${response.status}）。`);
+          return { success: false, error: errorMsg };
+        }
+
+        // 流式响应处理
+        if (onChunk && response.body) {
+          const guardedOnChunk = (chunk: string) => {
+            if (activeRequestId === requestId) {
+              onChunk(chunk);
+            }
+          };
+
+          let fullContent = '';
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          // 启动流式数据间隔超时
+          const resetStreamIdleTimer = () => {
+            if (streamIdleTimer) clearTimeout(streamIdleTimer);
+            streamIdleTimer = setTimeout(() => {
+              if (activeRequestId === requestId) {
+                controller.abort();
+              }
+            }, STREAM_IDLE_TIMEOUT_MS);
+          };
+          resetStreamIdleTimer();
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              // 收到数据，重置间隔超时
+              resetStreamIdleTimer();
+
+              const decoded = decoder.decode(value, { stream: true });
+              const lines = decoded.split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const data = line.slice(6).trim();
+                  if (data === '[DONE]') continue;
+                  try {
+                    const parsed = JSON.parse(data);
+                    const chunk = parsed.choices?.[0]?.delta?.content ?? '';
+                    if (chunk) {
+                      fullContent += chunk;
+                      guardedOnChunk(chunk);
+                    }
+                  } catch {
+                    // Skip malformed JSON lines
+                  }
+                }
+              }
+            }
+          } catch {
+            if (streamIdleTimer) clearTimeout(streamIdleTimer);
+            if (fullContent) {
+              return { success: true, content: fullContent };
+            }
+            return { success: false, error: '流式响应中断，未接收到有效内容。' };
+          }
+
+          if (streamIdleTimer) clearTimeout(streamIdleTimer);
+
+          if (activeRequestId === requestId) {
+            activeRequestId = null;
+            activeController = null;
+          }
+
+          if (!fullContent) {
+            return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
+          }
+          return { success: true, content: fullContent };
+        }
+
+        // 非流式响应
+        const json = await response.json();
+        const content = json.choices?.[0]?.message?.content ?? '';
+
+        if (activeRequestId === requestId) {
+          activeRequestId = null;
+          activeController = null;
+        }
+
+        if (!content) {
+          return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
+        }
+        return { success: true, content };
+      } catch (error: unknown) {
+        clearTimeout(timeoutId);
+
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          if (activeRequestId !== requestId) {
+            return { success: false, cancelled: true };
+          }
+          activeRequestId = null;
+          activeController = null;
+          return { success: false, error: '请求超时，请增加超时时间或缩短输入内容后重试。' };
+        }
+        if (error instanceof TypeError) {
+          return { success: false, error: '网络错误，请检查网络连接后重试。' };
+        }
+        return {
+          success: false,
+          error: `请求失败：${error instanceof Error ? error.message : '未知错误'}`,
+        };
+      }
     },
   };
 }

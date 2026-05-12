@@ -20,7 +20,7 @@ import type { ProjectStore } from '../types/stores';
 import type { NovelFileData } from '../types/project';
 import type { ConsistencyIssue } from '../types/consistency';
 import type { Character } from '../types/character';
-import type { WorldEntry } from '../types/world';
+import type { WorldEntry, ExtractedWorldEntry, ExtractedCharacter, ExtractedResult } from '../types/world';
 import type { TimelinePoint } from '../types/timeline';
 import type { PlotThread } from '../types/plot';
 import { createChapterStore } from '../stores/chapter-store';
@@ -38,6 +38,7 @@ import { createConsistencyEngine } from '../lib/consistency-engine';
 import { createExportEngine } from '../lib/export-engine';
 import { createAIAssistantEngine } from '../lib/ai-assistant-engine';
 import { createTagStore } from '../stores/tag-store';
+import { WorldExtractDialog } from '../components/dialogs/WorldExtractDialog';
 
 /* ── focus-mode styles ── */
 const s: Record<string, CSSProperties> = {
@@ -61,6 +62,61 @@ const s: Record<string, CSSProperties> = {
 
 interface EditorPageProps {
   projectStore: ProjectStore;
+}
+
+/** Parse AI response text into ExtractedResult (characters + world entries) */
+function parseExtractedResult(content: string): ExtractedResult {
+  // Try to extract JSON object from the response
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return { characters: [], worldEntries: [] };
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (typeof parsed !== 'object' || parsed === null) return { characters: [], worldEntries: [] };
+
+    const validTypes = new Set([
+      'location', 'faction', 'rule', 'item', 'race',
+      'magic', 'history', 'culture', 'technology', 'economy', 'religion',
+    ]);
+
+    // Parse characters
+    const characters: ExtractedCharacter[] = Array.isArray(parsed.characters)
+      ? parsed.characters.filter(
+          (item: unknown): item is Record<string, unknown> =>
+            typeof item === 'object' && item !== null &&
+            typeof (item as Record<string, unknown>).name === 'string',
+        ).map((item: Record<string, unknown>) => ({
+          name: String(item.name).trim(),
+          aliases: Array.isArray(item.aliases)
+            ? (item.aliases as unknown[]).filter((a: unknown) => typeof a === 'string').map((a: string) => a.trim())
+            : [],
+          appearance: typeof item.appearance === 'string' ? (item.appearance as string).trim() : '',
+          personality: typeof item.personality === 'string' ? (item.personality as string).trim() : '',
+          backstory: typeof item.backstory === 'string' ? (item.backstory as string).trim() : '',
+          selected: true,
+        }))
+      : [];
+
+    // Parse world entries
+    const worldEntries: ExtractedWorldEntry[] = Array.isArray(parsed.worldEntries)
+      ? parsed.worldEntries.filter(
+          (item: unknown): item is { name: string; type: string; description: string } =>
+            typeof item === 'object' && item !== null &&
+            typeof (item as Record<string, unknown>).name === 'string' &&
+            typeof (item as Record<string, unknown>).type === 'string' &&
+            typeof (item as Record<string, unknown>).description === 'string',
+        ).map((item: { name: string; type: string; description: string }) => ({
+          name: item.name.trim(),
+          type: validTypes.has(item.type) ? item.type : 'rule',
+          description: item.description.trim(),
+          selected: true,
+        }))
+      : [];
+
+    return { characters, worldEntries };
+  } catch {
+    return { characters: [], worldEntries: [] };
+  }
 }
 
 function EditorPage({ projectStore }: EditorPageProps) {
@@ -150,6 +206,14 @@ function EditorPage({ projectStore }: EditorPageProps) {
 
   // Refresh key to force sidebar list re-render after CRUD operations
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // World extract from file
+  const [showWorldExtractDialog, setShowWorldExtractDialog] = useState(false);
+  const [worldExtractResult, setWorldExtractResult] = useState<ExtractedResult>({ characters: [], worldEntries: [] });
+  const [worldExtractFileName, setWorldExtractFileName] = useState('');
+  const [worldExtractLoading, setWorldExtractLoading] = useState(false);
+  const [worldExtractError, setWorldExtractError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const projectId = project?.id ?? '';
   const projectName = project?.name ?? '未命名项目';
@@ -324,6 +388,92 @@ function EditorPage({ projectStore }: EditorPageProps) {
     setEditingWorld(null);
   }, []);
 
+  /* ── World extract from file ── */
+  const handleImportWorldFile = useCallback(() => {
+    const provider = aiStore.getActiveProvider();
+    if (!provider) {
+      showToast('warning', '请先配置 AI 模型，才能使用从文件导入功能');
+      return;
+    }
+    // Create a hidden file input, trigger it, and read the file
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.md,.txt,.markdown';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const fileName = file.name;
+      const text = await file.text();
+      if (!text.trim()) {
+        showToast('warning', '文件内容为空');
+        return;
+      }
+      setWorldExtractFileName(fileName);
+      setWorldExtractLoading(true);
+      setWorldExtractError(null);
+      setWorldExtractResult({ characters: [], worldEntries: [] });
+      setShowWorldExtractDialog(true);
+
+      try {
+        const result = await aiEngine.extractWorldEntries(text);
+        if (result.cancelled) {
+          setWorldExtractLoading(false);
+          return;
+        }
+        if (!result.success) {
+          setWorldExtractLoading(false);
+          setWorldExtractError(result.error ?? '提取失败');
+          return;
+        }
+
+        // Parse JSON from AI response
+        const content = result.content ?? '';
+        const extractedResult = parseExtractedResult(content);
+        if (extractedResult.characters.length === 0 && extractedResult.worldEntries.length === 0) {
+          setWorldExtractLoading(false);
+          setWorldExtractError('未能从文本中提取到有效的角色或世界观元素，请尝试其他文件或调整文件内容');
+          return;
+        }
+        setWorldExtractResult(extractedResult);
+        setWorldExtractLoading(false);
+      } catch (err) {
+        setWorldExtractLoading(false);
+        setWorldExtractError(err instanceof Error ? err.message : '未知错误');
+      }
+    };
+    input.click();
+  }, [aiStore, aiEngine]);
+
+  const handleWorldExtractConfirm = useCallback((_characters: Character[], _entries: WorldEntry[]) => {
+    setShowWorldExtractDialog(false);
+    setWorldExtractResult({ characters: [], worldEntries: [] });
+    setWorldExtractFileName('');
+    setWorldExtractError(null);
+    setRefreshKey((k) => k + 1);
+    showToast('success', '世界观条目已导入');
+  }, []);
+
+  const handleWorldExtractCancel = useCallback(() => {
+    if (worldExtractLoading) {
+      aiEngine.abort();
+    }
+    setShowWorldExtractDialog(false);
+    setWorldExtractResult({ characters: [], worldEntries: [] });
+    setWorldExtractFileName('');
+    setWorldExtractError(null);
+    setWorldExtractLoading(false);
+  }, [aiEngine, worldExtractLoading]);
+
+  const handleWorldExtractRetry = useCallback(() => {
+    // Re-trigger import by re-calling the same flow
+    setWorldExtractError(null);
+    setWorldExtractLoading(true);
+    setWorldExtractResult({ characters: [], worldEntries: [] });
+    // We need to re-read the file — simplest approach: close and let user re-import
+    setShowWorldExtractDialog(false);
+    setWorldExtractLoading(false);
+  }, []);
+
   const handleTimelineConfirm = useCallback((data: Omit<TimelinePoint, 'id'>) => {
     if (editingTimeline) {
       timelineStore.updateTimelinePoint(editingTimeline.id, data);
@@ -425,6 +575,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
             customCategories={worldStore.listCustomCategories(projectId)}
             onSelectEntry={(id) => { setSelectedWorldId(id); setPanelMode('world'); }}
             onAddEntry={() => { setEditingWorld(null); setShowWorldDialog(true); }}
+            onImportFile={handleImportWorldFile}
           />
         );
       case 'timeline':
@@ -598,6 +749,20 @@ function EditorPage({ projectStore }: EditorPageProps) {
         onExportCancel={() => setShowExportDialog(false)}
         showAIConfig={showAIConfig}
         onAIConfigClose={() => setShowAIConfig(false)}
+      />
+
+      <WorldExtractDialog
+        open={showWorldExtractDialog}
+        fileName={worldExtractFileName}
+        extractedResult={worldExtractResult}
+        isExtracting={worldExtractLoading}
+        extractError={worldExtractError}
+        projectId={projectId}
+        worldStore={worldStore}
+        characterStore={characterStore}
+        onConfirm={handleWorldExtractConfirm}
+        onCancel={handleWorldExtractCancel}
+        onRetry={handleWorldExtractRetry}
       />
     </EditorStoreProvider>
   );

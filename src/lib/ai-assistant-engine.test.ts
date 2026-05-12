@@ -782,3 +782,98 @@ describe('recommendSkills', () => {
     }
   });
 });
+
+describe('AIAssistantEngine - extractWorldEntries', () => {
+  let stores: ReturnType<typeof setupStores>;
+  let engine: AIAssistantEngine;
+
+  beforeEach(() => {
+    stores = setupStores();
+    engine = createEngine(stores);
+    // Configure AI provider
+    stores.aiStore.updateConfig({
+      providers: [{
+        id: 'test-provider',
+        name: 'Test',
+        apiKey: 'test-key',
+        modelName: 'test-model',
+        apiEndpoint: 'http://localhost:1234/v1/chat/completions',
+        timeoutMs: 5000,
+      }],
+      activeProviderId: 'test-provider',
+      promptTemplates: [],
+      activeTemplateId: null,
+      defaultTemplate: DEFAULT_PROMPT_TEMPLATE,
+    });
+  });
+
+  it('should return error when no provider configured', async () => {
+    const noProviderStore = createAIAssistantStore();
+    const noProviderEngine = createAIAssistantEngine({ ...stores, aiStore: noProviderStore });
+    const result = await noProviderEngine.extractWorldEntries('some text');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('AI 模型未配置');
+  });
+
+  it('should send correct system prompt with category list to API', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '[]' } }],
+      }),
+    } as Response);
+
+    await engine.extractWorldEntries('青云门位于青云山之巅');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const call = fetchSpy.mock.calls[0];
+    const body = JSON.parse(call[1]?.body as string);
+    const systemMsg = body.messages.find((m: { role: string }) => m.role === 'system');
+    expect(systemMsg.content).toContain('资料提取助手');
+    expect(systemMsg.content).toContain('location');
+    expect(systemMsg.content).toContain('faction');
+    expect(systemMsg.content).toContain('characters');
+    expect(systemMsg.content).toContain('worldEntries');
+
+    const userMsg = body.messages.find((m: { role: string }) => m.role === 'user');
+    expect(userMsg.content).toContain('青云门');
+
+    fetchSpy.mockRestore();
+  });
+
+  it('should return parsed content from non-streaming response', async () => {
+    const jsonContent = JSON.stringify([
+      { name: '青云门', type: 'faction', description: '修仙界第一大宗门' },
+      { name: '青云山', type: 'location', description: '修仙圣地' },
+    ]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: jsonContent } }],
+      }),
+    } as Response);
+
+    const result = await engine.extractWorldEntries('青云门位于青云山之巅');
+    expect(result.success).toBe(true);
+    expect(result.content).toContain('青云门');
+  });
+
+  it('should handle API error responses', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+    } as Response);
+
+    const result = await engine.extractWorldEntries('some text');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('API Key');
+  });
+
+  it('should handle network errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const result = await engine.extractWorldEntries('some text');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('网络错误');
+  });
+});

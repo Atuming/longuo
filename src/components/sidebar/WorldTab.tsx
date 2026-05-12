@@ -49,9 +49,10 @@ interface WorldTabProps {
   customCategories?: CustomWorldCategory[];
   onSelectEntry?: (id: string) => void;
   onAddEntry?: () => void;
+  onImportFile?: () => void;
 }
 
-export function WorldTab({ projectId, worldStore, customCategories, onSelectEntry, onAddEntry }: WorldTabProps) {
+export function WorldTab({ projectId, worldStore, customCategories, onSelectEntry, onAddEntry, onImportFile }: WorldTabProps) {
   const [filter, setFilter] = useState<FilterType>('all');
   const [query, setQuery] = useState('');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -132,6 +133,15 @@ export function WorldTab({ projectId, worldStore, customCategories, onSelectEntr
         >
           添加设定
         </Button>
+        {onImportFile && (
+          <Button
+            variant="secondary"
+            style={{ flex: 1, fontSize: 12, height: 30 }}
+            onClick={onImportFile}
+          >
+            从文件导入
+          </Button>
+        )}
       </div>
     </div>
   );

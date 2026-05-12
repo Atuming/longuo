@@ -8,6 +8,7 @@
     "builtin-expand",
     "builtin-rewrite",
     "builtin-conflict",
-    "builtin-inner"
+    "builtin-inner",
+    "builtin-extract-world"
   ]
 }

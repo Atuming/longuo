@@ -32,6 +32,7 @@ export interface AIAssistantEngine {
   packContext(chapterId: string): PackedContext;
   buildPrompt(context: PackedContext, userInput: string, template: PromptTemplate): { systemPrompt: string; userPrompt: string };
   generate(request: AIGenerateRequest, onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
+  extractWorldEntries(text: string, onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
   validateConfig(provider: AIProvider): { valid: boolean; errors: string[] };
   abort(): void;
   resolveSkillPrompt(skill: WritingSkill, paramValues: Record<string, string>): string;

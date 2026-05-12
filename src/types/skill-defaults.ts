@@ -263,4 +263,24 @@ export const BUILT_IN_SKILLS: WritingSkill[] = [
     builtIn: true,
     enabled: true,
   },
+  {
+    id: 'builtin-extract-world',
+    name: '从文档导入',
+    icon: '\u{1F4E5}',
+    description: '从文本中同时提取角色信息和世界观设定，导入到角色和世界观面板',
+    promptTemplate:
+      '请从给定文本中同时提取角色信息和世界观设定。' +
+      '输出严格 JSON 对象：{"characters":[...],"worldEntries":[...]}。' +
+      'characters 每项含：name、aliases（字符串数组）、appearance、personality、backstory。' +
+      'worldEntries 每项含：name、type、description。' +
+      '具体有名字的个体归 characters，抽象设定归 worldEntries。种族只用于物种大类。',
+    parameters: [],
+    contextHints: [
+      { signal: 'hasWorldEntries', condition: 'false', weight: 1.0 },
+      { signal: 'hasCharacters', condition: 'false', weight: 1.0 },
+    ],
+    sortOrder: 8,
+    builtIn: true,
+    enabled: true,
+  },
 ];

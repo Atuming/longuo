@@ -14,7 +14,7 @@ export type { CharacterRelationship } from './relationship';
 export type { TimelinePoint, TimelineEvent } from './timeline';
 
 // 世界观
-export type { WorldEntry, BuiltInCategory, CustomWorldCategory } from './world';
+export type { WorldEntry, BuiltInCategory, CustomWorldCategory, ExtractedWorldEntry, ExtractedCharacter, ExtractedResult } from './world';
 export { BUILT_IN_CATEGORIES, CUSTOM_CATEGORY_DEFAULT_COLOR, getCategoryInfo } from './world';
 
 // 情节线索

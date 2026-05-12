@@ -22,6 +22,30 @@ export interface CustomWorldCategory {
   label: string;
 }
 
+/** AI 从文本中提取的世界观条目（导入预览用） */
+export interface ExtractedWorldEntry {
+  name: string;
+  type: string;           // 内置分类 key
+  description: string;
+  selected: boolean;       // 是否勾选
+}
+
+/** AI 从文本中提取的角色（导入预览用） */
+export interface ExtractedCharacter {
+  name: string;
+  aliases: string[];
+  appearance: string;
+  personality: string;
+  backstory: string;
+  selected: boolean;
+}
+
+/** AI 从文档提取的统一结果 */
+export interface ExtractedResult {
+  characters: ExtractedCharacter[];
+  worldEntries: ExtractedWorldEntry[];
+}
+
 /** 11 种内置分类 */
 export const BUILT_IN_CATEGORIES: BuiltInCategory[] = [
   { key: 'location',   label: '地点',       color: { bg: '#EBF8FF', text: '#3182CE' } },
