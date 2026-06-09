@@ -4,9 +4,13 @@ import type { WritingEditorHandle } from '../../components/editor/WritingEditor'
 import { RelationshipGraphPage } from '../../components/graph/RelationshipGraphPage';
 import { AIAssistantPanel } from '../../components/ai/AIAssistantPanel';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
+import { TimelineView } from '../../components/timeline/TimelineView';
+import { PlotBoard } from '../../components/plot/PlotBoard';
 import { useEditorStores } from './EditorStoreContext';
 import type { ViewMode } from './EditorToolbar';
 import type { Character } from '../../types/character';
+import type { TimelinePoint } from '../../types/timeline';
+import type { PlotThread } from '../../types/plot';
 
 /* ── styles (module-level, no re-creation per render) ── */
 const s: Record<string, CSSProperties> = {
@@ -34,6 +38,12 @@ export interface EditorContentProps {
   effectiveTheme: 'light' | 'dark';
   onEditCharacter: (character: Character) => void;
   onDeleteCharacter: (characterId: string) => void;
+  onEditTimeline: (point: TimelinePoint) => void;
+  onDeleteTimeline: (pointId: string) => void;
+  onEditPlot: (thread: PlotThread) => void;
+  onDeletePlot: (threadId: string) => void;
+  onSelectTimeline: (pointId: string) => void;
+  onSelectPlot: (threadId: string) => void;
 }
 
 export function EditorContent({
@@ -47,6 +57,12 @@ export function EditorContent({
   effectiveTheme,
   onEditCharacter,
   onDeleteCharacter,
+  onEditTimeline,
+  onDeleteTimeline,
+  onEditPlot,
+  onDeletePlot,
+  onSelectTimeline,
+  onSelectPlot,
 }: EditorContentProps) {
   const {
     projectId,
@@ -55,6 +71,7 @@ export function EditorContent({
     characterStore,
     relationshipStore,
     timelineStore,
+    plotStore,
     aiStore,
     aiEngine,
   } = useEditorStores();
@@ -63,6 +80,8 @@ export function EditorContent({
     () => characterStore.listCharacters(projectId),
     [characterStore, projectId],
   );
+
+  const selectedText = editorRef.current?.getSelectedText() ?? '';
 
   switch (viewMode) {
     case 'graph':
@@ -81,15 +100,26 @@ export function EditorContent({
       );
     case 'timeline':
       return (
-        <div style={s.tabPlaceholder}>
-          时间线视图（使用左侧时间线 Tab 管理）
-        </div>
+        <TimelineView
+          projectId={projectId}
+          timelineStore={timelineStore}
+          chapterStore={chapterStore}
+          characterStore={characterStore}
+          onSelectPoint={onSelectTimeline}
+          onEdit={onEditTimeline}
+          onDelete={onDeleteTimeline}
+        />
       );
     case 'plot':
       return (
-        <div style={s.tabPlaceholder}>
-          情节视图（使用左侧情节线索 Tab 管理）
-        </div>
+        <PlotBoard
+          projectId={projectId}
+          plotStore={plotStore}
+          chapterStore={chapterStore}
+          onSelectThread={onSelectPlot}
+          onEdit={onEditPlot}
+          onDelete={onDeletePlot}
+        />
       );
     case 'writing':
     default:
@@ -115,6 +145,7 @@ export function EditorContent({
             aiEngine={aiEngine}
             onAccept={onAIAccept}
             onOpenSettings={onOpenAIConfig}
+            selectedText={selectedText}
           />
         </div>
       );

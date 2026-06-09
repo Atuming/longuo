@@ -29,6 +29,11 @@ function createReadyEngine() {
     modelName: 'model',
     apiEndpoint: 'https://api.test.com/v1/chat',
     timeoutMs: 30_000,
+    temperature: 0.8,
+    maxTokens: 4096,
+    topP: 1.0,
+    presencePenalty: 0,
+    frequencyPenalty: 0,
   });
   stores.aiStore.setActiveProvider(p.id);
   const ch = stores.chapterStore.createChapter('proj-1', null, '章节', 'chapter');

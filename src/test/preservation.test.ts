@@ -73,10 +73,10 @@ describe('Preservation: Test suite and TypeScript compilation do not regress', (
     // After fixes, this count should be <= the baseline (ideally 0).
     //
     // Pre-existing errors on unfixed code:
-    // - TS6133 (unused locals/params): ~12 errors across multiple files
-    // - TS2339/TS2304 (showSaveFilePicker/FilePickerAcceptType): 3 errors in file-manager
-    // Total baseline: 15 errors
-    const BASELINE_ERROR_COUNT = 15;
+    // - TS6133 (unused locals/params): 4 errors across multiple files
+    // - TS2352 (type conversion): 1 error in file-manager.test.ts
+    // Total baseline: 5 errors
+    const BASELINE_ERROR_COUNT = 0;
 
     if (errorCount > 0) {
       console.log(`TypeScript compilation errors: ${errorCount} (baseline: ${BASELINE_ERROR_COUNT})`);

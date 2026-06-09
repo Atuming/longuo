@@ -70,9 +70,6 @@ const arbRootCount = fc.integer({ min: 2, max: 5 });
 /** Generate a number of child chapters per parent */
 const arbChildCount = fc.integer({ min: 0, max: 3 });
 
-/** Arbitrary for chapter level */
-const arbLevel = fc.constantFrom('volume' as const, 'chapter' as const, 'section' as const);
-
 // ── Property 7: 章节拖拽后 sortOrder 连续无重复 ─────────────────────
 
 describe('Feature: comprehensive-quality-audit, Property 7: 章节拖拽后 sortOrder 连续无重复', () => {

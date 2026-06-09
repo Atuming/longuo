@@ -62,6 +62,15 @@ describe('serialize / deserialize', () => {
           systemPrompt: 'sys',
           userPromptTemplate: 'user',
         },
+        writingStyle: {
+          enabled: false,
+          genre: 'xuanhuan',
+          genreCustom: '',
+          narrativePov: 'third-limited',
+          languageStyle: 'modern',
+          tone: 'serious',
+          customNotes: '',
+        },
       },
     });
     const restored = deserialize(serialize(data));
@@ -88,7 +97,7 @@ describe('serialize / deserialize', () => {
   it('should handle old project files without tagData (backward compatibility)', () => {
     const data = makeFileData();
     // Ensure tagData is not set
-    delete (data as Record<string, unknown>)['tagData'];
+    delete (data as unknown as Record<string, unknown>)['tagData'];
     const json = serialize(data);
     const restored = deserialize(json);
     expect(restored.tagData).toBeUndefined();

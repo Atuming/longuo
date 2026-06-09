@@ -1,22 +1,26 @@
 import type { AIAssistantStore } from '../types/stores';
-import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill, SkillParameter, ContextHint } from '../types/ai';
+import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill, SkillParameter, ContextHint, WritingStyle } from '../types/ai';
 import { BUILT_IN_SKILLS } from '../types/skill-defaults';
+import { DEFAULT_WRITING_STYLE } from '../types/ai';
 
 /** 内置默认中文小说写作 Prompt 模板 */
 export const DEFAULT_PROMPT_TEMPLATE: PromptTemplate = {
   id: 'default',
   name: '默认中文小说写作模板',
   systemPrompt:
-    '你是一位资深的中文小说写作助手。请根据提供的小说上下文信息，帮助作者润色和扩展内容。' +
+    '你是一位资深的中文小说写作助手，文笔精湛，擅长多种流派和风格。' +
+    '请根据提供的小说上下文信息，帮助作者完成写作任务。' +
     '保持与已有章节风格一致，注意角色性格和世界观设定的连贯性。\n\n' +
-    '当前章节内容：\n{chapter_content}\n\n' +
-    '前一章摘要：\n{prev_chapter_summary}\n\n' +
-    '后一章摘要：\n{next_chapter_summary}\n\n' +
-    '相关角色信息：\n{character_info}\n\n' +
-    '世界观背景：\n{world_setting}\n\n' +
-    '时间线上下文：\n{timeline_context}',
+    '写作风格要求：{writing_style}\n' +
+    '当前章节内容：\n{chapter_content}\n' +
+    '前一章摘要：{prev_chapter_summary}\n' +
+    '后一章摘要：{next_chapter_summary}\n' +
+    '相关角色信息：\n{character_info}\n' +
+    '世界观背景：\n{world_setting}\n' +
+    '时间线上下文：\n{timeline_context}\n' +
+    '用户选中的文本段落：\n{selected_text}',
   userPromptTemplate:
-    '请根据以上小说上下文，按照以下要求生成或润色段落：\n\n{user_input}',
+    '请根据以上小说上下文，完成以下写作任务：\n\n{user_input}',
 };
 
 /** 创建默认 AIConfig */
@@ -27,6 +31,7 @@ function createDefaultConfig(overrides?: Partial<AIConfig>): AIConfig {
     promptTemplates: [],
     activeTemplateId: null,
     defaultTemplate: { ...DEFAULT_PROMPT_TEMPLATE },
+    writingStyle: { ...DEFAULT_WRITING_STYLE },
     ...overrides,
   };
 }
@@ -41,6 +46,11 @@ function cloneTemplate(t: PromptTemplate): PromptTemplate {
   return { ...t };
 }
 
+/** 深拷贝 WritingStyle */
+function cloneStyle(s: WritingStyle): WritingStyle {
+  return { ...s };
+}
+
 /** 深拷贝 AIConfig */
 function cloneConfig(config: AIConfig): AIConfig {
   return {
@@ -49,6 +59,7 @@ function cloneConfig(config: AIConfig): AIConfig {
     promptTemplates: config.promptTemplates.map(cloneTemplate),
     activeTemplateId: config.activeTemplateId,
     defaultTemplate: cloneTemplate(config.defaultTemplate),
+    writingStyle: config.writingStyle ? cloneStyle(config.writingStyle) : { ...DEFAULT_WRITING_STYLE },
   };
 }
 
@@ -239,6 +250,9 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
       if (updates.defaultTemplate !== undefined) {
         config.defaultTemplate = cloneTemplate(updates.defaultTemplate);
       }
+      if (updates.writingStyle !== undefined) {
+        config.writingStyle = cloneStyle(updates.writingStyle);
+      }
       persistToLocalStorage(config);
     },
 
@@ -250,6 +264,11 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
         modelName: data.modelName,
         apiEndpoint: data.apiEndpoint,
         timeoutMs: data.timeoutMs,
+        temperature: data.temperature ?? 0.8,
+        maxTokens: data.maxTokens ?? 4096,
+        topP: data.topP ?? 1.0,
+        presencePenalty: data.presencePenalty ?? 0,
+        frequencyPenalty: data.frequencyPenalty ?? 0,
       };
       config.providers.push(provider);
       persistToLocalStorage(config);
@@ -264,6 +283,11 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
       if (updates.modelName !== undefined) provider.modelName = updates.modelName;
       if (updates.apiEndpoint !== undefined) provider.apiEndpoint = updates.apiEndpoint;
       if (updates.timeoutMs !== undefined) provider.timeoutMs = updates.timeoutMs;
+      if (updates.temperature !== undefined) provider.temperature = updates.temperature;
+      if (updates.maxTokens !== undefined) provider.maxTokens = updates.maxTokens;
+      if (updates.topP !== undefined) provider.topP = updates.topP;
+      if (updates.presencePenalty !== undefined) provider.presencePenalty = updates.presencePenalty;
+      if (updates.frequencyPenalty !== undefined) provider.frequencyPenalty = updates.frequencyPenalty;
       persistToLocalStorage(config);
     },
 
@@ -463,6 +487,18 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
 
     setBuiltInSkills(skills: WritingSkill[]): void {
       builtInDefaults = skills.map(cloneSkill);
+    },
+
+    getWritingStyle(): WritingStyle {
+      return config.writingStyle ? cloneStyle(config.writingStyle) : { ...DEFAULT_WRITING_STYLE };
+    },
+
+    updateWritingStyle(updates: Partial<WritingStyle>): void {
+      if (!config.writingStyle) {
+        config.writingStyle = { ...DEFAULT_WRITING_STYLE };
+      }
+      Object.assign(config.writingStyle, updates);
+      persistToLocalStorage(config);
     },
   };
 }

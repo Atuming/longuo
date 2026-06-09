@@ -39,6 +39,7 @@ import { createExportEngine } from '../lib/export-engine';
 import { createAIAssistantEngine } from '../lib/ai-assistant-engine';
 import { createTagStore } from '../stores/tag-store';
 import { WorldExtractDialog } from '../components/dialogs/WorldExtractDialog';
+import { SearchDialog } from '../components/search/SearchDialog';
 
 /* ── focus-mode styles ── */
 const s: Record<string, CSSProperties> = {
@@ -62,6 +63,73 @@ const s: Record<string, CSSProperties> = {
 
 interface EditorPageProps {
   projectStore: ProjectStore;
+}
+
+const MAX_CHUNK_SIZE = 8000;
+
+/** Split text into chunks at paragraph/sentence boundaries */
+function chunkText(text: string, maxSize = MAX_CHUNK_SIZE): string[] {
+  if (text.length <= maxSize) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxSize) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try paragraph boundary first
+    let splitPoint = remaining.lastIndexOf('\n\n', maxSize);
+    if (splitPoint < maxSize * 0.4) {
+      // Try Chinese sentence ending
+      splitPoint = remaining.lastIndexOf('。', maxSize);
+      if (splitPoint < maxSize * 0.3) {
+        splitPoint = remaining.lastIndexOf('\n', maxSize);
+        if (splitPoint < maxSize * 0.3) {
+          splitPoint = maxSize;
+        } else {
+          splitPoint += 1;
+        }
+      } else {
+        splitPoint += 1;
+      }
+    } else {
+      splitPoint += 2;
+    }
+
+    chunks.push(remaining.slice(0, splitPoint).trim());
+    remaining = remaining.slice(splitPoint).trim();
+  }
+
+  return chunks;
+}
+
+/** Merge two ExtractedResults, deduplicating by name (case-insensitive) */
+function mergeExtractedResults(a: ExtractedResult, b: ExtractedResult): ExtractedResult {
+  const charMap = new Map<string, ExtractedCharacter>();
+  for (const ch of [...a.characters, ...b.characters]) {
+    const key = ch.name.toLowerCase();
+    const existing = charMap.get(key);
+    if (!existing || ch.backstory.length + ch.appearance.length > existing.backstory.length + existing.appearance.length) {
+      charMap.set(key, { ...ch, selected: true });
+    }
+  }
+
+  const worldMap = new Map<string, ExtractedWorldEntry>();
+  for (const e of [...a.worldEntries, ...b.worldEntries]) {
+    const key = e.name.toLowerCase();
+    const existingEntry = worldMap.get(key);
+    if (!existingEntry || e.description.length > existingEntry.description.length) {
+      worldMap.set(key, { ...e, selected: true });
+    }
+  }
+
+  return {
+    characters: Array.from(charMap.values()),
+    worldEntries: Array.from(worldMap.values()),
+  };
 }
 
 /** Parse AI response text into ExtractedResult (characters + world entries) */
@@ -162,6 +230,18 @@ function EditorPage({ projectStore }: EditorPageProps) {
     document.documentElement.dataset.theme = effectiveTheme;
   }, [effectiveTheme]);
 
+  // Ctrl+Shift+F → search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
+        e.preventDefault();
+        setShowSearch(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const handleThemeToggle = useCallback(() => {
     const next = effectiveTheme === 'light' ? 'dark' : 'light';
     themeStore.setTheme(next);
@@ -188,6 +268,9 @@ function EditorPage({ projectStore }: EditorPageProps) {
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [showAIConfig, setShowAIConfig] = useState(false);
 
+  // Search
+  const [showSearch, setShowSearch] = useState(false);
+
   // Character edit dialog
   const [editingCharacter, setEditingCharacter] = useState<Character | null>(null);
   const [showCharDialog, setShowCharDialog] = useState(false);
@@ -213,7 +296,11 @@ function EditorPage({ projectStore }: EditorPageProps) {
   const [worldExtractFileName, setWorldExtractFileName] = useState('');
   const [worldExtractLoading, setWorldExtractLoading] = useState(false);
   const [worldExtractError, setWorldExtractError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [worldExtractProgress, setWorldExtractProgress] = useState<{
+    current: number;
+    total: number;
+    fileName: string;
+  } | null>(null);
 
   const projectId = project?.id ?? '';
   const projectName = project?.name ?? '未命名项目';
@@ -388,57 +475,76 @@ function EditorPage({ projectStore }: EditorPageProps) {
     setEditingWorld(null);
   }, []);
 
-  /* ── World extract from file ── */
+  /* ── World extract from file (batch) ── */
   const handleImportWorldFile = useCallback(() => {
     const provider = aiStore.getActiveProvider();
     if (!provider) {
       showToast('warning', '请先配置 AI 模型，才能使用从文件导入功能');
       return;
     }
-    // Create a hidden file input, trigger it, and read the file
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.md,.txt,.markdown';
+    input.multiple = true;
     input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const fileName = file.name;
-      const text = await file.text();
-      if (!text.trim()) {
-        showToast('warning', '文件内容为空');
+      const files = Array.from(input.files ?? []);
+      if (files.length === 0) return;
+
+      // Read all files first
+      const fileTexts: { name: string; chunks: string[] }[] = [];
+      for (const file of files) {
+        const text = (await file.text()).trim();
+        if (!text) continue;
+        fileTexts.push({ name: file.name, chunks: chunkText(text) });
+      }
+      if (fileTexts.length === 0) {
+        showToast('warning', '所选文件内容均为空');
         return;
       }
-      setWorldExtractFileName(fileName);
+
+      const totalChunks = fileTexts.reduce((sum, f) => sum + f.chunks.length, 0);
+      const allNames = fileTexts.map((f) => f.name);
+
+      setWorldExtractFileName(allNames.join(', '));
       setWorldExtractLoading(true);
       setWorldExtractError(null);
       setWorldExtractResult({ characters: [], worldEntries: [] });
       setShowWorldExtractDialog(true);
 
-      try {
-        const result = await aiEngine.extractWorldEntries(text);
-        if (result.cancelled) {
-          setWorldExtractLoading(false);
-          return;
-        }
-        if (!result.success) {
-          setWorldExtractLoading(false);
-          setWorldExtractError(result.error ?? '提取失败');
-          return;
-        }
+      let accumulated: ExtractedResult = { characters: [], worldEntries: [] };
+      let processed = 0;
 
-        // Parse JSON from AI response
-        const content = result.content ?? '';
-        const extractedResult = parseExtractedResult(content);
-        if (extractedResult.characters.length === 0 && extractedResult.worldEntries.length === 0) {
-          setWorldExtractLoading(false);
-          setWorldExtractError('未能从文本中提取到有效的角色或世界观元素，请尝试其他文件或调整文件内容');
-          return;
+      for (const { name, chunks } of fileTexts) {
+        for (const chunk of chunks) {
+          processed++;
+          const label = totalChunks > 1
+            ? `${name} (段 ${processed}/${totalChunks})`
+            : name;
+          setWorldExtractProgress({ current: processed, total: totalChunks, fileName: label });
+
+          try {
+            const result = await aiEngine.extractWorldEntries(chunk);
+            if (result.cancelled) {
+              setWorldExtractLoading(false);
+              setWorldExtractProgress(null);
+              return;
+            }
+            if (result.success && result.content) {
+              const extracted = parseExtractedResult(result.content);
+              accumulated = mergeExtractedResults(accumulated, extracted);
+              setWorldExtractResult(accumulated);
+            }
+          } catch {
+            // Continue with next chunk on individual failure
+          }
         }
-        setWorldExtractResult(extractedResult);
-        setWorldExtractLoading(false);
-      } catch (err) {
-        setWorldExtractLoading(false);
-        setWorldExtractError(err instanceof Error ? err.message : '未知错误');
+      }
+
+      setWorldExtractLoading(false);
+      setWorldExtractProgress(null);
+
+      if (accumulated.characters.length === 0 && accumulated.worldEntries.length === 0) {
+        setWorldExtractError('未能从所选文件中提取到有效的角色或世界观元素，请尝试其他文件或调整文件内容');
       }
     };
     input.click();
@@ -449,6 +555,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
     setWorldExtractResult({ characters: [], worldEntries: [] });
     setWorldExtractFileName('');
     setWorldExtractError(null);
+    setWorldExtractProgress(null);
     setRefreshKey((k) => k + 1);
     showToast('success', '世界观条目已导入');
   }, []);
@@ -462,6 +569,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
     setWorldExtractFileName('');
     setWorldExtractError(null);
     setWorldExtractLoading(false);
+    setWorldExtractProgress(null);
   }, [aiEngine, worldExtractLoading]);
 
   const handleWorldExtractRetry = useCallback(() => {
@@ -542,6 +650,33 @@ function EditorPage({ projectStore }: EditorPageProps) {
     setPanelMode('none');
     setRefreshKey((k) => k + 1);
   }, [timelineStore]);
+
+  const handleSelectTimeline = useCallback((id: string) => {
+    setSelectedTimelineId(id);
+    setPanelMode('timeline');
+  }, []);
+
+  const handleEditPlot = useCallback((thread: PlotThread) => {
+    setEditingPlot(thread);
+    setShowPlotDialog(true);
+  }, []);
+
+  const handleDeletePlot = useCallback((id: string) => {
+    plotStore.deleteThread(id);
+    setRefreshKey((k) => k + 1);
+  }, [plotStore]);
+
+  const handleSelectPlot = useCallback((threadId: string) => {
+    const thread = plotStore.getThread(threadId);
+    if (thread && thread.associatedChapterIds.length > 0) {
+      setSelectedChapterId(thread.associatedChapterIds[0]);
+      setViewMode('writing');
+    }
+  }, [plotStore]);
+
+  const handleSearch = useCallback(() => {
+    setShowSearch(true);
+  }, []);
 
   /* ── sidebar tab content ── */
   const renderTabContent = (tab: SidebarTabKey) => {
@@ -681,6 +816,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
             onToggleExportMenu={() => setShowExportMenu(!showExportMenu)}
             onOpenExportDialog={() => setShowExportDialog(true)}
             onBack={handleBack}
+            onSearch={handleSearch}
           />
         }
         sidebar={
@@ -722,6 +858,12 @@ function EditorPage({ projectStore }: EditorPageProps) {
             effectiveTheme={effectiveTheme}
             onEditCharacter={handleEditCharacter}
             onDeleteCharacter={(id) => { characterStore.deleteCharacter(id); }}
+            onEditTimeline={handleEditTimeline}
+            onDeleteTimeline={handleDeleteTimeline}
+            onEditPlot={handleEditPlot}
+            onDeletePlot={handleDeletePlot}
+            onSelectTimeline={handleSelectTimeline}
+            onSelectPlot={handleSelectPlot}
           />
         </ErrorBoundary>
       </EditorLayout>
@@ -757,12 +899,21 @@ function EditorPage({ projectStore }: EditorPageProps) {
         extractedResult={worldExtractResult}
         isExtracting={worldExtractLoading}
         extractError={worldExtractError}
+        progress={worldExtractProgress}
         projectId={projectId}
         worldStore={worldStore}
         characterStore={characterStore}
         onConfirm={handleWorldExtractConfirm}
         onCancel={handleWorldExtractCancel}
         onRetry={handleWorldExtractRetry}
+      />
+
+      <SearchDialog
+        open={showSearch}
+        chapterStore={chapterStore}
+        projectId={projectId}
+        onSelectChapter={setSelectedChapterId}
+        onClose={() => setShowSearch(false)}
       />
     </EditorStoreProvider>
   );

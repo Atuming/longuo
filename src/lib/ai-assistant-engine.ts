@@ -15,6 +15,7 @@ import type {
   WritingSkill,
   ScoredSkill,
   ContextSignals,
+  WritingStyle,
 } from '../types/ai';
 import { BUILT_IN_CATEGORIES } from '../types/world';
 
@@ -34,6 +35,8 @@ const PLACEHOLDERS = [
   '{character_info}',
   '{world_setting}',
   '{timeline_context}',
+  '{selected_text}',
+  '{writing_style}',
   '{user_input}',
 ] as const;
 
@@ -45,6 +48,18 @@ function replacePlaceholders(template: string, values: Record<string, string>): 
     result = result.replaceAll(placeholder, values[key] ?? '');
   }
   return result;
+}
+
+/** 清理替换后 Prompt 中的空标签行和多余空行 */
+function cleanPrompt(prompt: string): string {
+  // 1. 移除空标签行：标签行后面紧跟空行，说明占位符为空
+  //    例如 "写作风格要求：\n\n" → 整段移除
+  //    但 "写作风格要求：\n【写作风格设定】\n" → 保留（下一行有内容）
+  let result = prompt.replace(/^.*[：:]\s*\n(?=\s*\n)/gm, '');
+  // 2. 合并 3 个及以上连续空行为 2 个
+  result = result.replace(/\n{3,}/g, '\n\n');
+  // 3. 去掉开头和结尾的空行
+  return result.trim();
 }
 
 /** 取前 N 个字符作为摘要 */
@@ -127,6 +142,54 @@ function matchSignal(
   }
 }
 
+/** 将 WritingStyle 转换为 Prompt 可用的文字摘要 */
+export function buildWritingStyleSummary(style: WritingStyle): string {
+  const parts: string[] = [];
+
+  const genreMap: Record<string, string> = {
+    xianxia: '仙侠', wuxia: '武侠', xuanhuan: '玄幻', urban: '都市',
+    scifi: '科幻', history: '历史', fantasy: '奇幻', mystery: '悬疑', romance: '言情',
+  };
+
+  if (style.genre && style.genre !== 'other') {
+    const label = genreMap[style.genre] ?? style.genre;
+    parts.push(`小说流派：${label}`);
+  } else if (style.genre === 'other' && style.genreCustom) {
+    parts.push(`小说流派：${style.genreCustom}`);
+  }
+
+  const povMap: Record<string, string> = {
+    first: '第一人称', 'third-limited': '第三人称限知视角', 'third-omniscient': '第三人称全知视角',
+  };
+  if (style.narrativePov && povMap[style.narrativePov]) {
+    parts.push(`叙事视角：${povMap[style.narrativePov]}`);
+  }
+
+  const langMap: Record<string, string> = {
+    classical: '古风典雅', modern: '现代流畅', colloquial: '口语化/接地气',
+    literary: '文学性强', minimalist: '极简白描',
+  };
+  if (style.languageStyle && langMap[style.languageStyle]) {
+    parts.push(`语言风格：${langMap[style.languageStyle]}`);
+  }
+
+  const toneMap: Record<string, string> = {
+    serious: '严肃正剧', light: '轻松诙谐', dark: '暗黑压抑',
+    tragic: '悲壮感人', warm: '温馨治愈', suspenseful: '紧张悬疑',
+  };
+  if (style.tone && toneMap[style.tone]) {
+    parts.push(`整体基调：${toneMap[style.tone]}`);
+  }
+
+  if (style.customNotes) {
+    parts.push(`补充风格要求：${style.customNotes}`);
+  }
+
+  return parts.length > 0
+    ? '【写作风格设定】\n' + parts.join('\n')
+    : '';
+}
+
 /**
  * 创建 AIAssistantEngine 实例。
  * 负责上下文打包、Prompt 组装、AI API 调用和配置验证。
@@ -139,7 +202,7 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
   let activeController: AbortController | null = null;
 
   return {
-    packContext(chapterId: string): PackedContext {
+    packContext(chapterId: string, selectedText?: string, writingStyleSummary?: string): PackedContext {
       const chapter = chapterStore.getChapter(chapterId);
       const chapterContent = chapter?.content ?? '';
 
@@ -150,14 +213,16 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         const allChapters = chapterStore.listChapters(chapter.projectId);
         const currentIndex = allChapters.findIndex((c) => c.id === chapterId);
         if (currentIndex > 0) {
-          prevChapterSummary = summarize(allChapters[currentIndex - 1].content);
+          const prev = allChapters[currentIndex - 1];
+          prevChapterSummary = `[${prev.title}] ${summarize(prev.content)}`;
         }
         if (currentIndex >= 0 && currentIndex < allChapters.length - 1) {
-          nextChapterSummary = summarize(allChapters[currentIndex + 1].content);
+          const next = allChapters[currentIndex + 1];
+          nextChapterSummary = `[${next.title}] ${summarize(next.content)}`;
         }
       }
 
-      // 获取关联角色信息（通过时间线的 associatedCharacterIds）
+      // 获取关联角色信息，使用叙事化格式
       let characterInfo = '';
       if (chapter) {
         const characterIds = new Set<string>();
@@ -167,40 +232,82 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
             characterIds.add(cid);
           }
         }
+        // 如果时间线没有关联角色，则获取项目中所有角色
+        if (characterIds.size === 0) {
+          const allChars = characterStore.listCharacters(chapter.projectId);
+          for (const c of allChars) {
+            characterIds.add(c.id);
+          }
+        }
         const charInfoParts: string[] = [];
         for (const cid of characterIds) {
           const char = characterStore.getCharacter(cid);
-          if (char) {
-            const aliases = char.aliases.length > 0 ? `（别名：${char.aliases.join('、')}）` : '';
-            charInfoParts.push(
-              `【${char.name}${aliases}】外貌：${char.appearance}；性格：${char.personality}；背景：${char.backstory}`
-            );
+          if (!char) continue;
+          const parts: string[] = [];
+          parts.push(`- ${char.name}`);
+          if (char.aliases.length > 0) {
+            parts.push(`（别名：${char.aliases.join('、')}）`);
           }
+          if (char.appearance) {
+            parts.push(`\n  外貌特征：${char.appearance}`);
+          }
+          if (char.personality) {
+            parts.push(`\n  性格特点：${char.personality}`);
+          }
+          if (char.backstory) {
+            parts.push(`\n  背景故事：${char.backstory}`);
+          }
+          charInfoParts.push(parts.join(''));
         }
         characterInfo = charInfoParts.join('\n');
       }
 
-      // 获取世界观背景设定
+      // 获取世界观背景设定（补全所有 11 种类型标签）
       let worldSetting = '';
       if (chapter) {
         const entries = worldStore.listEntries(chapter.projectId);
-        const worldParts: string[] = [];
-        for (const entry of entries) {
-          const typeLabel = entry.type === 'location' ? '地点' : entry.type === 'faction' ? '势力' : '规则';
-          worldParts.push(`【${typeLabel}：${entry.name}】${entry.description}`);
+        if (entries.length > 0) {
+          const worldParts: string[] = [];
+          for (const entry of entries) {
+            const catInfo = BUILT_IN_CATEGORIES.find((c) => c.key === entry.type);
+            const typeLabel = catInfo?.label ?? entry.type;
+            worldParts.push(`- 【${typeLabel}】${entry.name}：${entry.description}`);
+          }
+          worldSetting = worldParts.join('\n');
         }
-        worldSetting = worldParts.join('\n');
       }
 
       // 获取时间线上下文
       let timelineContext = '';
       if (chapter) {
         const points = timelineStore.filterByChapter(chapter.projectId, chapterId);
-        const timelineParts: string[] = [];
-        for (const tp of points) {
-          timelineParts.push(`[${tp.label}] ${tp.description}`);
+        if (points.length > 0) {
+          const timelineParts: string[] = [];
+          for (const tp of points) {
+            const charNames: string[] = [];
+            for (const cid of tp.associatedCharacterIds) {
+              const c = characterStore.getCharacter(cid);
+              if (c) charNames.push(c.name);
+            }
+            const charRef = charNames.length > 0 ? `（关联角色：${charNames.join('、')}）` : '';
+            timelineParts.push(`- [${tp.label}] ${tp.description}${charRef}`);
+          }
+          timelineContext = timelineParts.join('\n');
         }
-        timelineContext = timelineParts.join('\n');
+      }
+
+      // 选中的文本段落
+      const effectiveSelectedText = selectedText && selectedText.trim()
+        ? selectedText.trim()
+        : '';
+
+      // 写作风格摘要（如果没有传入则从 store 读取）
+      let effectiveStyleSummary = writingStyleSummary ?? '';
+      if (!effectiveStyleSummary) {
+        const style = aiStore.getWritingStyle();
+        if (style && style.enabled) {
+          effectiveStyleSummary = buildWritingStyleSummary(style);
+        }
       }
 
       return {
@@ -210,6 +317,8 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         characterInfo,
         worldSetting,
         timelineContext,
+        selectedText: effectiveSelectedText,
+        writingStyleSummary: effectiveStyleSummary,
       };
     },
 
@@ -233,12 +342,14 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         character_info: context.characterInfo,
         world_setting: context.worldSetting,
         timeline_context: context.timelineContext,
+        selected_text: context.selectedText,
+        writing_style: context.writingStyleSummary,
         user_input: userInput,
       };
 
       return {
-        systemPrompt: replacePlaceholders(template.systemPrompt, values),
-        userPrompt: replacePlaceholders(template.userPromptTemplate, values),
+        systemPrompt: cleanPrompt(replacePlaceholders(template.systemPrompt, values)),
+        userPrompt: cleanPrompt(replacePlaceholders(template.userPromptTemplate, values)),
       };
     },
 
@@ -272,19 +383,42 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
       }
 
       // 打包上下文并构建 Prompt
-      const context = this.packContext(request.chapterId);
+      const context = this.packContext(
+        request.chapterId,
+        request.selectedText,
+      );
       const template = aiStore.getActiveTemplate();
       const { systemPrompt, userPrompt } = this.buildPrompt(context, request.userInput, template);
 
       // 构建请求体（OpenAI 兼容格式）
-      const body = JSON.stringify({
+      const requestBody: Record<string, unknown> = {
         model: provider.modelName,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
         stream: !!onChunk,
-      });
+      };
+
+      // 注入生成控制参数
+      if ((provider.temperature ?? 0) > 0) {
+        requestBody['temperature'] = provider.temperature;
+      }
+      if ((provider.maxTokens ?? 0) > 0) {
+        requestBody['max_tokens'] = provider.maxTokens;
+      }
+      const topP = provider.topP ?? 1;
+      if (topP > 0 && topP < 1) {
+        requestBody['top_p'] = topP;
+      }
+      if ((provider.presencePenalty ?? 0) !== 0) {
+        requestBody['presence_penalty'] = provider.presencePenalty;
+      }
+      if ((provider.frequencyPenalty ?? 0) !== 0) {
+        requestBody['frequency_penalty'] = provider.frequencyPenalty;
+      }
+
+      const body = JSON.stringify(requestBody);
 
       // 4. 超时控制：连接阶段使用 provider.timeoutMs
       //      流式接收阶段改用数据间隔超时（30秒无新数据则中断）
@@ -542,14 +676,28 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         return { success: false, error: `AI 配置无效：${validation.errors.join('；')}` };
       }
 
-      const body = JSON.stringify({
+      const requestBody: Record<string, unknown> = {
         model: provider.modelName,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
         stream: !!onChunk,
-      });
+      };
+
+      // 注入生成控制参数
+      if ((provider.temperature ?? 0) > 0) {
+        requestBody['temperature'] = provider.temperature;
+      }
+      if ((provider.maxTokens ?? 0) > 0) {
+        requestBody['max_tokens'] = provider.maxTokens;
+      }
+      const topP = provider.topP ?? 1;
+      if (topP > 0 && topP < 1) {
+        requestBody['top_p'] = topP;
+      }
+
+      const body = JSON.stringify(requestBody);
 
       // 超时控制：连接阶段使用 provider.timeoutMs
       //      流式接收阶段改用数据间隔超时（30秒无新数据则中断）

@@ -37,6 +37,44 @@ function createEngine(stores: {
   return createAIAssistantEngine(stores);
 }
 
+/** Helper: create a full AIProvider with defaults for all required fields */
+function makeProvider(overrides: Partial<{
+  id: string; name: string; apiKey: string; modelName: string;
+  apiEndpoint: string; timeoutMs: number;
+}> = {}): import('../types/ai').AIProvider {
+  return {
+    id: overrides.id ?? '1',
+    name: overrides.name ?? 'Test',
+    apiKey: overrides.apiKey ?? 'sk-key',
+    modelName: overrides.modelName ?? 'gpt-4',
+    apiEndpoint: overrides.apiEndpoint ?? 'https://api.openai.com/v1/chat/completions',
+    timeoutMs: overrides.timeoutMs ?? 30000,
+    temperature: 0.8,
+    maxTokens: 4096,
+    topP: 1.0,
+    presencePenalty: 0,
+    frequencyPenalty: 0,
+  };
+}
+
+/** Helper: create a PackedContext with defaults for new fields */
+function makeContext(overrides: Partial<{
+  chapterContent: string; prevChapterSummary: string; nextChapterSummary: string;
+  characterInfo: string; worldSetting: string; timelineContext: string;
+  selectedText: string; writingStyleSummary: string;
+}> = {}): import('../types/ai').PackedContext {
+  return {
+    chapterContent: overrides.chapterContent ?? '',
+    prevChapterSummary: overrides.prevChapterSummary ?? '',
+    nextChapterSummary: overrides.nextChapterSummary ?? '',
+    characterInfo: overrides.characterInfo ?? '',
+    worldSetting: overrides.worldSetting ?? '',
+    timelineContext: overrides.timelineContext ?? '',
+    selectedText: overrides.selectedText ?? '',
+    writingStyleSummary: overrides.writingStyleSummary ?? '',
+  };
+}
+
 describe('AIAssistantEngine', () => {
   let stores: ReturnType<typeof setupStores>;
   let engine: AIAssistantEngine;
@@ -73,8 +111,8 @@ describe('AIAssistantEngine', () => {
       stores.chapterStore.updateChapter(ch3.id, { content: '后一章内容' });
 
       const ctx = engine.packContext(ch2.id);
-      expect(ctx.prevChapterSummary).toBe('前一章内容');
-      expect(ctx.nextChapterSummary).toBe('后一章内容');
+      expect(ctx.prevChapterSummary).toBe('[第一章] 前一章内容');
+      expect(ctx.nextChapterSummary).toBe('[第三章] 后一章内容');
     });
 
     it('should truncate long chapter summaries to 200 chars', () => {
@@ -85,7 +123,7 @@ describe('AIAssistantEngine', () => {
       stores.chapterStore.updateChapter(ch2.id, { content: '当前' });
 
       const ctx = engine.packContext(ch2.id);
-      expect(ctx.prevChapterSummary.length).toBe(203); // 200 + '...'
+      expect(ctx.prevChapterSummary.length).toBe(209); // [第一章] (6) + 200 + '...' (3)
       expect(ctx.prevChapterSummary.endsWith('...')).toBe(true);
     });
 
@@ -182,14 +220,14 @@ describe('AIAssistantEngine', () => {
 
   describe('buildPrompt', () => {
     it('should replace all placeholders in template', () => {
-      const context = {
+      const context = makeContext({
         chapterContent: '章节内容',
         prevChapterSummary: '前章摘要',
         nextChapterSummary: '后章摘要',
         characterInfo: '角色信息',
         worldSetting: '世界设定',
         timelineContext: '时间线',
-      };
+      });
 
       const template = {
         id: 'test',
@@ -204,14 +242,7 @@ describe('AIAssistantEngine', () => {
     });
 
     it('should replace missing placeholders with empty string', () => {
-      const context = {
-        chapterContent: '',
-        prevChapterSummary: '',
-        nextChapterSummary: '',
-        characterInfo: '',
-        worldSetting: '',
-        timelineContext: '',
-      };
+      const context = makeContext();
 
       const template = {
         id: 'test',
@@ -226,14 +257,16 @@ describe('AIAssistantEngine', () => {
     });
 
     it('should not leave any unreplaced placeholders', () => {
-      const context = {
+      const context = makeContext({
         chapterContent: 'c',
         prevChapterSummary: 'p',
         nextChapterSummary: 'n',
         characterInfo: 'ch',
         worldSetting: 'w',
         timelineContext: 't',
-      };
+        selectedText: 's',
+        writingStyleSummary: 'ws',
+      });
 
       const result = engine.buildPrompt(context, 'u', DEFAULT_PROMPT_TEMPLATE);
       expect(result.systemPrompt).not.toContain('{chapter_content}');
@@ -242,85 +275,45 @@ describe('AIAssistantEngine', () => {
       expect(result.systemPrompt).not.toContain('{character_info}');
       expect(result.systemPrompt).not.toContain('{world_setting}');
       expect(result.systemPrompt).not.toContain('{timeline_context}');
+      expect(result.systemPrompt).not.toContain('{selected_text}');
+      expect(result.systemPrompt).not.toContain('{writing_style}');
       expect(result.userPrompt).not.toContain('{user_input}');
     });
   });
 
   describe('validateConfig', () => {
     it('should return valid for complete config', () => {
-      const result = engine.validateConfig({
-        id: '1',
-        name: 'Test',
-        apiKey: 'sk-key',
-        modelName: 'gpt-4',
-        apiEndpoint: 'https://api.openai.com/v1/chat/completions',
-        timeoutMs: 30000,
-      });
+      const result = engine.validateConfig(makeProvider());
       expect(result.valid).toBe(true);
       expect(result.errors).toHaveLength(0);
     });
 
     it('should return invalid when apiKey is empty', () => {
-      const result = engine.validateConfig({
-        id: '1',
-        name: 'Test',
-        apiKey: '',
-        modelName: 'gpt-4',
-        apiEndpoint: 'https://api.openai.com',
-        timeoutMs: 30000,
-      });
+      const result = engine.validateConfig(makeProvider({ apiKey: '' }));
       expect(result.valid).toBe(false);
       expect(result.errors).toContain('API Key 不能为空');
     });
 
     it('should return invalid when apiEndpoint is empty', () => {
-      const result = engine.validateConfig({
-        id: '1',
-        name: 'Test',
-        apiKey: 'key',
-        modelName: 'gpt-4',
-        apiEndpoint: '',
-        timeoutMs: 30000,
-      });
+      const result = engine.validateConfig(makeProvider({ apiEndpoint: '' }));
       expect(result.valid).toBe(false);
       expect(result.errors).toContain('API 端点 URL 不能为空');
     });
 
     it('should return invalid when modelName is empty', () => {
-      const result = engine.validateConfig({
-        id: '1',
-        name: 'Test',
-        apiKey: 'key',
-        modelName: '',
-        apiEndpoint: 'https://api.openai.com',
-        timeoutMs: 30000,
-      });
+      const result = engine.validateConfig(makeProvider({ modelName: '' }));
       expect(result.valid).toBe(false);
       expect(result.errors).toContain('模型名称不能为空');
     });
 
     it('should return multiple errors when multiple fields are empty', () => {
-      const result = engine.validateConfig({
-        id: '1',
-        name: 'Test',
-        apiKey: '',
-        modelName: '',
-        apiEndpoint: '',
-        timeoutMs: 30000,
-      });
+      const result = engine.validateConfig(makeProvider({ apiKey: '', modelName: '', apiEndpoint: '' }));
       expect(result.valid).toBe(false);
       expect(result.errors).toHaveLength(3);
     });
 
     it('should treat whitespace-only strings as empty', () => {
-      const result = engine.validateConfig({
-        id: '1',
-        name: 'Test',
-        apiKey: '   ',
-        modelName: '  ',
-        apiEndpoint: ' ',
-        timeoutMs: 30000,
-      });
+      const result = engine.validateConfig(makeProvider({ apiKey: '   ', modelName: '  ', apiEndpoint: ' ' }));
       expect(result.valid).toBe(false);
       expect(result.errors).toHaveLength(3);
     });
@@ -340,6 +333,8 @@ describe('AIAssistantEngine', () => {
         modelName: '',
         apiEndpoint: '',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
       const result = await engine.generate({ userInput: 'test', chapterId: 'ch1' });
@@ -354,6 +349,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://invalid.endpoint.test/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -377,6 +374,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -399,6 +398,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -421,6 +422,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -443,6 +446,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -465,6 +470,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -497,6 +504,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 
@@ -524,6 +533,8 @@ describe('AIAssistantEngine', () => {
         modelName: 'model',
         apiEndpoint: 'https://api.test.com/v1/chat',
         timeoutMs: 5000,
+        temperature: 0.8, maxTokens: 4096, topP: 1.0,
+        presencePenalty: 0, frequencyPenalty: 0,
       });
       stores.aiStore.setActiveProvider(p.id);
 

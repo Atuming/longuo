@@ -5,7 +5,7 @@ import type { CharacterRelationship } from './relationship';
 import type { TimelinePoint } from './timeline';
 import type { WorldEntry, CustomWorldCategory } from './world';
 import type { PlotThread } from './plot';
-import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill } from './ai';
+import type { AIConfig, AIProvider, PromptTemplate, AIHistoryRecord, WritingSkill, WritingStyle } from './ai';
 import type { Tag, TagData } from './tag';
 
 /** 项目 Store */
@@ -126,6 +126,10 @@ export interface AIAssistantStore {
   resetSkill(id: string): void;
   reorderSkills(orderedIds: string[]): void;
   setBuiltInSkills(skills: WritingSkill[]): void;
+
+  // 写作风格管理
+  getWritingStyle(): WritingStyle;
+  updateWritingStyle(updates: Partial<WritingStyle>): void;
 }
 
 /** 标签 Store */

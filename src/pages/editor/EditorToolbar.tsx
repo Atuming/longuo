@@ -133,6 +133,7 @@ export interface EditorToolbarProps {
   onToggleExportMenu: () => void;
   onOpenExportDialog: () => void;
   onBack: () => void;
+  onSearch: () => void;
 }
 
 export function EditorToolbar({
@@ -155,6 +156,7 @@ export function EditorToolbar({
   onToggleExportMenu,
   onOpenExportDialog,
   onBack,
+  onSearch,
 }: EditorToolbarProps) {
   /* ── focus mode toolbar ── */
   if (focusMode) {
@@ -250,6 +252,11 @@ export function EditorToolbar({
           </div>
         )}
       </div>
+
+      {/* Search */}
+      <button style={s.toolBtn} onClick={onSearch} title="全文搜索 (Ctrl+Shift+F)">
+        搜索
+      </button>
 
       {/* AI */}
       <button

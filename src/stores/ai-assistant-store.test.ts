@@ -48,6 +48,7 @@ describe('AIAssistantStore', () => {
         promptTemplates: [{ id: 't1', name: 'Custom', systemPrompt: 'sys', userPromptTemplate: 'usr' }],
         activeTemplateId: 't1',
         defaultTemplate: DEFAULT_PROMPT_TEMPLATE,
+        writingStyle: { enabled: false, genre: 'xuanhuan', genreCustom: '', narrativePov: 'third-limited', languageStyle: 'modern', tone: 'serious', customNotes: '' },
       };
       const store = createAIAssistantStore(initialConfig);
       const config = store.getConfig();
@@ -66,6 +67,7 @@ describe('AIAssistantStore', () => {
         promptTemplates: [],
         activeTemplateId: null,
         defaultTemplate: DEFAULT_PROMPT_TEMPLATE,
+        writingStyle: { enabled: false, genre: 'xuanhuan', genreCustom: '', narrativePov: 'third-limited', languageStyle: 'modern', tone: 'serious', customNotes: '' },
       };
       const store = createAIAssistantStore(initialConfig);
       // Mutate original

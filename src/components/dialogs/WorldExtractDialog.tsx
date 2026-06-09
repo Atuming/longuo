@@ -2,7 +2,7 @@ import { useState, useCallback, type CSSProperties } from 'react';
 import type { WorldStore, CharacterStore } from '../../types/stores';
 import type { WorldEntry } from '../../types/world';
 import type { ExtractedWorldEntry, ExtractedCharacter, ExtractedResult } from '../../types/world';
-import { BUILT_IN_CATEGORIES, getCategoryInfo } from '../../types/world';
+import { BUILT_IN_CATEGORIES } from '../../types/world';
 import type { Character } from '../../types/character';
 import { Button } from '../ui/Button';
 
@@ -185,6 +185,26 @@ const s: Record<string, CSSProperties> = {
     outline: 'none',
     boxSizing: 'border-box' as const,
   },
+  progressBar: {
+    width: '100%',
+    height: 6,
+    borderRadius: 3,
+    background: 'var(--color-border)',
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  progressFill: {
+    height: '100%',
+    background: 'var(--color-accent, #3182CE)',
+    borderRadius: 3,
+    transition: 'width 0.2s ease',
+  },
+  progressLabel: {
+    fontSize: 12,
+    color: 'var(--color-text-secondary)',
+    textAlign: 'center' as const,
+    marginTop: 4,
+  },
 };
 
 interface WorldExtractDialogProps {
@@ -193,6 +213,7 @@ interface WorldExtractDialogProps {
   extractedResult: ExtractedResult;
   isExtracting: boolean;
   extractError: string | null;
+  progress?: { current: number; total: number; fileName: string } | null;
   projectId: string;
   worldStore: WorldStore;
   characterStore: CharacterStore;
@@ -207,6 +228,7 @@ export function WorldExtractDialog({
   extractedResult,
   isExtracting,
   extractError,
+  progress,
   projectId,
   worldStore,
   characterStore,
@@ -217,8 +239,11 @@ export function WorldExtractDialog({
   const [characters, setCharacters] = useState<ExtractedCharacter[]>(extractedResult.characters);
   const [worldEntries, setWorldEntries] = useState<ExtractedWorldEntry[]>(extractedResult.worldEntries);
 
-  // Sync state when extractedResult changes
-  if (characters !== extractedResult.characters && extractedResult.characters.length > 0 && characters.length === 0) {
+  // Sync local state from props during batch extraction (results arrive in real-time)
+  // and on initial load (props populated before local state is initialized).
+  const hasIncoming = extractedResult.characters.length > 0 || extractedResult.worldEntries.length > 0;
+  const localEmpty = characters.length === 0 && worldEntries.length === 0;
+  if ((isExtracting || localEmpty) && hasIncoming) {
     setCharacters(extractedResult.characters);
     setWorldEntries(extractedResult.worldEntries);
   }
@@ -321,12 +346,24 @@ export function WorldExtractDialog({
         </div>
 
         {isExtracting && (
-          <div style={s.loading}>
-            <span>⏳</span> AI 正在分析文本，提取角色和世界观设定...
+          <div>
+            <div style={s.loading}>
+              <span>⏳</span> AI 正在分析文本，提取角色和世界观设定...
+            </div>
+            {progress && (
+              <div style={{ padding: '0 0 8px' }}>
+                <div style={s.progressBar}>
+                  <div style={{ ...s.progressFill, width: `${Math.round((progress.current / progress.total) * 100)}%` }} />
+                </div>
+                <div style={s.progressLabel}>
+                  {progress.current}/{progress.total} — {progress.fileName}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {extractError && (
+        {extractError && !hasAnyResult && (
           <div style={s.error}>
             <div>{extractError}</div>
             <Button variant="secondary" onClick={onRetry} style={{ height: 24, fontSize: 11, marginTop: 6 }}>
@@ -339,7 +376,7 @@ export function WorldExtractDialog({
           <div style={s.empty}>未从文本中提取到角色或世界观设定</div>
         )}
 
-        {!isExtracting && hasAnyResult && (
+        {((!isExtracting && hasAnyResult) || (isExtracting && hasAnyResult)) && (
           <div style={{ ...s.list, maxHeight: '55vh' }}>
             {/* Characters section */}
             {characters.length > 0 && (
@@ -412,10 +449,10 @@ export function WorldExtractDialog({
         )}
 
         <div style={s.footer}>
-          <Button variant="secondary" onClick={onCancel}>取消</Button>
-          {!isExtracting && hasAnyResult && (
-            <Button variant="primary" onClick={handleConfirm} disabled={totalSelected === 0}>
-              导入选中的 {totalSelected} 项
+          <Button variant="secondary" onClick={onCancel}>{isExtracting ? '取消' : '关闭'}</Button>
+          {hasAnyResult && (
+            <Button variant="primary" onClick={handleConfirm} disabled={isExtracting || totalSelected === 0}>
+              导入选中的 {isExtracting ? `(${totalSelected} 项 — 处理中...)` : `${totalSelected} 项`}
             </Button>
           )}
         </div>

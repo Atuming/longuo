@@ -1,6 +1,12 @@
 import { useState, useRef, type CSSProperties } from 'react';
 import type { AIAssistantStore } from '../../types/stores';
 import type { AIConfig, AIProvider, PromptTemplate, WritingSkill, SkillParameter, ContextHint } from '../../types/ai';
+import {
+  GENRE_OPTIONS,
+  POV_OPTIONS,
+  LANGUAGE_STYLE_OPTIONS,
+  TONE_OPTIONS,
+} from '../../types/ai';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Input } from '../ui/Input';
 import { TextArea } from '../ui/TextArea';
@@ -73,7 +79,7 @@ interface AIConfigDialogProps {
 }
 
 export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) {
-  const [activeTab, setActiveTab] = useState<'providers' | 'templates' | 'skills'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'templates' | 'skills' | 'writingStyle'>('providers');
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
@@ -87,6 +93,20 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
   const [pModel, setPModel] = useState('');
   const [pEndpoint, setPEndpoint] = useState('');
   const [pTimeout, setPTimeout] = useState(30000);
+  const [pTemperature, setPTemperature] = useState(0.8);
+  const [pMaxTokens, setPMaxTokens] = useState(4096);
+  const [pTopP, setPTopP] = useState(1.0);
+  const [pPresencePenalty, setPPresencePenalty] = useState(0);
+  const [pFrequencyPenalty, setPFrequencyPenalty] = useState(0);
+
+  // Writing style form
+  const [wsEnabled, setWsEnabled] = useState(false);
+  const [wsGenre, setWsGenre] = useState('xuanhuan');
+  const [wsGenreCustom, setWsGenreCustom] = useState('');
+  const [wsPov, setWsPov] = useState('third-limited');
+  const [wsLanguage, setWsLanguage] = useState('modern');
+  const [wsTone, setWsTone] = useState('serious');
+  const [wsCustomNotes, setWsCustomNotes] = useState('');
 
   // Template form
   const [tName, setTName] = useState('');
@@ -121,6 +141,16 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
       const allSkills = aiStore.listSkills();
       setSkills(allSkills);
       setSelectedSkillId(allSkills[0]?.id ?? null);
+
+      // Load writing style
+      const ws = aiStore.getWritingStyle();
+      setWsEnabled(ws.enabled);
+      setWsGenre(ws.genre);
+      setWsGenreCustom(ws.genreCustom);
+      setWsPov(ws.narrativePov);
+      setWsLanguage(ws.languageStyle);
+      setWsTone(ws.tone);
+      setWsCustomNotes(ws.customNotes);
     }
   }
 
@@ -132,6 +162,11 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
     if (p) {
       setPName(p.name); setPApiKey(p.apiKey); setPModel(p.modelName);
       setPEndpoint(p.apiEndpoint); setPTimeout(p.timeoutMs);
+      setPTemperature(p.temperature ?? 0.8);
+      setPMaxTokens(p.maxTokens ?? 4096);
+      setPTopP(p.topP ?? 1.0);
+      setPPresencePenalty(p.presencePenalty ?? 0);
+      setPFrequencyPenalty(p.frequencyPenalty ?? 0);
     }
   }
 
@@ -187,6 +222,9 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
       aiStore.updateProvider(selectedProviderId, {
         name: pName, apiKey: pApiKey, modelName: pModel,
         apiEndpoint: pEndpoint, timeoutMs: pTimeout,
+        temperature: pTemperature, maxTokens: pMaxTokens,
+        topP: pTopP, presencePenalty: pPresencePenalty,
+        frequencyPenalty: pFrequencyPenalty,
       });
     }
     if (selectedTemplateId) {
@@ -197,12 +235,26 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
     saveCurrentSkill();
     if (activeProviderId) aiStore.setActiveProvider(activeProviderId);
     if (activeTemplateId) aiStore.setActiveTemplate(activeTemplateId);
+
+    // Save writing style
+    aiStore.updateWritingStyle({
+      enabled: wsEnabled,
+      genre: wsGenre,
+      genreCustom: wsGenreCustom,
+      narrativePov: wsPov,
+      languageStyle: wsLanguage,
+      tone: wsTone,
+      customNotes: wsCustomNotes,
+    });
+
     onClose();
   };
 
   const handleAddProvider = () => {
     const p = aiStore.addProvider({
       name: '新提供商', apiKey: '', modelName: '', apiEndpoint: '', timeoutMs: 30000,
+      temperature: 0.8, maxTokens: 4096, topP: 1.0,
+      presencePenalty: 0, frequencyPenalty: 0,
     });
     setProviders([...providers, p]);
     setSelectedProviderId(p.id);
@@ -419,6 +471,8 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
           onClick={() => setActiveTab('templates')}>Prompt 模板</button>
         <button style={{ ...s.tab, ...(activeTab === 'skills' ? s.tabActive : {}) }}
           onClick={() => setActiveTab('skills')}>技能管理</button>
+        <button style={{ ...s.tab, ...(activeTab === 'writingStyle' ? s.tabActive : {}) }}
+          onClick={() => setActiveTab('writingStyle')}>写作风格</button>
       </div>
 
       {activeTab === 'providers' && (
@@ -468,6 +522,38 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
                 <div style={s.field}>
                   <span style={s.label}>超时时间 (ms)</span>
                   <Input type="number" value={String(pTimeout)} onChange={(e) => setPTimeout(Number(e.currentTarget.value) || 30000)} />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ ...s.field, flex: 1 }}>
+                    <span style={s.label}>Temperature (0-2)</span>
+                    <Input type="number" step="0.1" min="0" max="2"
+                      value={String(pTemperature)} onChange={(e) => setPTemperature(Number(e.currentTarget.value) || 0)} />
+                  </div>
+                  <div style={{ ...s.field, flex: 1 }}>
+                    <span style={s.label}>Max Tokens</span>
+                    <Input type="number" step="256" min="0"
+                      value={String(pMaxTokens)} onChange={(e) => setPMaxTokens(Number(e.currentTarget.value) || 0)} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ ...s.field, flex: 1 }}>
+                    <span style={s.label}>Top P (0-1)</span>
+                    <Input type="number" step="0.05" min="0" max="1"
+                      value={String(pTopP)} onChange={(e) => setPTopP(Number(e.currentTarget.value) || 1)} />
+                  </div>
+                  <div style={{ ...s.field, flex: 1 }}>
+                    <span style={s.label}>Presence Penalty (-2~2)</span>
+                    <Input type="number" step="0.1" min="-2" max="2"
+                      value={String(pPresencePenalty)} onChange={(e) => setPPresencePenalty(Number(e.currentTarget.value) || 0)} />
+                  </div>
+                  <div style={{ ...s.field, flex: 1 }}>
+                    <span style={s.label}>Frequency Penalty (-2~2)</span>
+                    <Input type="number" step="0.1" min="-2" max="2"
+                      value={String(pFrequencyPenalty)} onChange={(e) => setPFrequencyPenalty(Number(e.currentTarget.value) || 0)} />
+                  </div>
+                </div>
+                <div style={s.hint}>
+                  Temperature 建议：创意写作 0.7-0.9，改写润色 0.4-0.6。Frequency Penalty 0.1-0.3 可减少用词重复。
                 </div>
               </>
             ) : (
@@ -686,6 +772,125 @@ export function AIConfigDialog({ open, aiStore, onClose }: AIConfigDialogProps) 
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {activeTab === 'writingStyle' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: 300 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+            <input type="checkbox" checked={wsEnabled} onChange={(e) => setWsEnabled(e.target.checked)} />
+            启用写作风格注入（AI 生成时将参考以下风格设定）
+          </label>
+
+          {wsEnabled && (
+            <>
+              <div style={s.field}>
+                <span style={s.label}>小说流派</span>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {GENRE_OPTIONS.map((g) => (
+                    <label key={g.value} style={{
+                      display: 'flex', alignItems: 'center', gap: 4, fontSize: 13,
+                      padding: '4px 8px', borderRadius: 'var(--radius)',
+                      border: '1px solid var(--color-border)',
+                      background: wsGenre === g.value ? 'var(--color-accent)' : 'transparent',
+                      color: wsGenre === g.value ? '#fff' : 'var(--color-text)',
+                      cursor: 'pointer',
+                    }}>
+                      <input type="radio" name="genre" value={g.value}
+                        checked={wsGenre === g.value}
+                        onChange={(e) => setWsGenre(e.target.value)}
+                        style={{ display: 'none' }} />
+                      {g.label}
+                    </label>
+                  ))}
+                </div>
+                {wsGenre === 'other' && (
+                  <Input value={wsGenreCustom} onChange={(e) => setWsGenreCustom(e.currentTarget.value)}
+                    placeholder="输入自定义流派名称" style={{ marginTop: 4 }} />
+                )}
+              </div>
+
+              <div style={s.field}>
+                <span style={s.label}>叙事视角</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {POV_OPTIONS.map((o) => (
+                    <label key={o.value} style={{
+                      display: 'flex', alignItems: 'center', gap: 4, fontSize: 13,
+                      padding: '4px 8px', borderRadius: 'var(--radius)',
+                      border: '1px solid var(--color-border)',
+                      background: wsPov === o.value ? 'var(--color-accent)' : 'transparent',
+                      color: wsPov === o.value ? '#fff' : 'var(--color-text)',
+                      cursor: 'pointer',
+                    }}>
+                      <input type="radio" name="pov" value={o.value}
+                        checked={wsPov === o.value}
+                        onChange={(e) => setWsPov(e.target.value)}
+                        style={{ display: 'none' }} />
+                      {o.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div style={s.field}>
+                <span style={s.label}>语言风格</span>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {LANGUAGE_STYLE_OPTIONS.map((o) => (
+                    <label key={o.value} style={{
+                      display: 'flex', alignItems: 'center', gap: 4, fontSize: 13,
+                      padding: '4px 8px', borderRadius: 'var(--radius)',
+                      border: '1px solid var(--color-border)',
+                      background: wsLanguage === o.value ? 'var(--color-accent)' : 'transparent',
+                      color: wsLanguage === o.value ? '#fff' : 'var(--color-text)',
+                      cursor: 'pointer',
+                    }}>
+                      <input type="radio" name="language" value={o.value}
+                        checked={wsLanguage === o.value}
+                        onChange={(e) => setWsLanguage(e.target.value)}
+                        style={{ display: 'none' }} />
+                      {o.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div style={s.field}>
+                <span style={s.label}>整体基调</span>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {TONE_OPTIONS.map((o) => (
+                    <label key={o.value} style={{
+                      display: 'flex', alignItems: 'center', gap: 4, fontSize: 13,
+                      padding: '4px 8px', borderRadius: 'var(--radius)',
+                      border: '1px solid var(--color-border)',
+                      background: wsTone === o.value ? 'var(--color-accent)' : 'transparent',
+                      color: wsTone === o.value ? '#fff' : 'var(--color-text)',
+                      cursor: 'pointer',
+                    }}>
+                      <input type="radio" name="tone" value={o.value}
+                        checked={wsTone === o.value}
+                        onChange={(e) => setWsTone(e.target.value)}
+                        style={{ display: 'none' }} />
+                      {o.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div style={s.field}>
+                <span style={s.label}>额外风格描述</span>
+                <TextArea value={wsCustomNotes} onChange={(e) => setWsCustomNotes(e.currentTarget.value)}
+                  placeholder="描述更多写作风格要求，例如：多用短句、少用成语、对白占比高、注重打斗场面的节奏感..."
+                  style={{ minHeight: 60 }} />
+                <span style={s.hint}>此内容将原样注入 AI 写作 Prompt，帮助 AI 更准确地把握你的文风偏好。</span>
+              </div>
+            </>
+          )}
+
+          {!wsEnabled && (
+            <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', padding: 16 }}>
+              启用后，AI 将根据你的风格设定生成更符合预期的内容。推荐开启以获得更一致的写作体验。
+            </div>
+          )}
         </div>
       )}
 

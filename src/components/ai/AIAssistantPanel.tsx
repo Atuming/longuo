@@ -211,10 +211,12 @@ interface AIAssistantPanelProps {
   aiEngine: AIAssistantEngine;
   onAccept?: (content: string) => void;
   onOpenSettings?: () => void;
+  /** 编辑器当前选中的文本（用于聚焦改写/润色范围） */
+  selectedText?: string;
 }
 
 export function AIAssistantPanel({
-  open, onClose, chapterId, projectId, aiStore, aiEngine, onAccept, onOpenSettings,
+  open, onClose, chapterId, projectId, aiStore, aiEngine, onAccept, onOpenSettings, selectedText,
 }: AIAssistantPanelProps) {
   const { characterStore } = useEditorStores();
 
@@ -351,7 +353,7 @@ export function AIAssistantPanel({
 
     try {
       const res = await aiEngine.generate(
-        { userInput: effectiveInput, chapterId },
+        { userInput: effectiveInput, chapterId, selectedText: selectedText ?? '' },
         (chunk: string) => {
           resultRef.current += chunk;
           setResult(resultRef.current);

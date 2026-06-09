@@ -6,8 +6,22 @@
       "apiKey": "92842b46fba8496c9b5d64389e2a6586.C5OuTElpd8m5NAjW",
       "modelName": "glm-4-flash",
       "apiEndpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-      "timeoutMs": 120000
+      "timeoutMs": 120000,
+      "temperature": 0.8,
+      "maxTokens": 4096,
+      "topP": 1.0,
+      "presencePenalty": 0.1,
+      "frequencyPenalty": 0.1
     }
   ],
-  "activeProviderId": "default-provider"
+  "activeProviderId": "default-provider",
+  "writingStyle": {
+    "enabled": true,
+    "genre": "xuanhuan",
+    "genreCustom": "",
+    "narrativePov": "third-limited",
+    "languageStyle": "modern",
+    "tone": "serious",
+    "customNotes": ""
+  }
 }

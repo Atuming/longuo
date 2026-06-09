@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
+import { useRef, useEffect, useState, useCallback, useMemo, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
@@ -10,6 +10,7 @@ import type { Character } from '../../types/character';
 import { showToast } from '../ui/Toast';
 import { DailyGoalProgress } from './DailyGoalProgress';
 import { createCrossReferenceExtension } from '../../lib/cross-reference';
+import { typewriterMode } from '../../lib/typewriter-mode';
 
 /* ── styles ── */
 const styles: Record<string, CSSProperties> = {
@@ -83,6 +84,7 @@ export interface WritingEditorHandle {
   appendContent: (content: string) => void;
   insertAtCursor: (content: string) => void;
   getCursorPosition: () => number | null;
+  getSelectedText: () => string;
 }
 
 export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>(function WritingEditor({ chapterId, chapterStore, projectStore, projectId, isDark = false, getCharacters }, ref) {
@@ -91,6 +93,8 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
   const [cursorInfo, setCursorInfo] = useState({ line: 1, col: 1 });
   const [wordCount, setWordCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
+  const [typewriterOn, setTypewriterOn] = useState(true);
+  const typewriterRef = useMemo(() => ({ current: true }), []);
   const failCountRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -136,6 +140,13 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
       const view = viewRef.current;
       if (!view) return null;
       return view.state.selection.main.head;
+    },
+    getSelectedText(): string {
+      const view = viewRef.current;
+      if (!view) return '';
+      const { from, to } = view.state.selection.main;
+      if (from === to) return '';
+      return view.state.doc.sliceString(from, to);
     },
   }));
 
@@ -192,6 +203,11 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
     return () => window.removeEventListener('keydown', handler);
   }, [chapterId, doSave]);
 
+  // Sync typewriter ref with state
+  useEffect(() => {
+    typewriterRef.current = typewriterOn;
+  }, [typewriterOn]);
+
   /* ── create / update editor ── */
   useEffect(() => {
     if (!containerRef.current) return;
@@ -238,6 +254,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
       baseTheme,
       ...(isDark ? [darkEditorTheme] : []),
       ...(getCharacters ? createCrossReferenceExtension(getCharacters) : []),
+      typewriterMode(typewriterRef),
     ];
 
     const state = EditorState.create({
@@ -315,6 +332,21 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
         <span>字数: {wordCount}</span>
         <span>行 {cursorInfo.line} : 列 {cursorInfo.col}</span>
         {projectId && <DailyGoalProgress projectId={projectId} wordCount={wordCount} />}
+        <button
+          style={{
+            ...styles.toolBtn,
+            fontSize: 11,
+            padding: '1px 8px',
+            height: 22,
+            background: typewriterOn ? 'var(--color-accent)' : 'transparent',
+            color: typewriterOn ? '#fff' : 'var(--color-text-secondary)',
+            border: typewriterOn ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
+          }}
+          onClick={() => setTypewriterOn(!typewriterOn)}
+          title={typewriterOn ? '打字机模式：已开启' : '打字机模式：已关闭'}
+        >
+          打字机
+        </button>
         <span style={{ marginLeft: 'auto', color: statusInfo.color }}>{statusInfo.text}</span>
       </div>
     </div>

@@ -29,7 +29,7 @@ export interface ExportEngine {
 
 /** AI 辅助引擎接口 */
 export interface AIAssistantEngine {
-  packContext(chapterId: string): PackedContext;
+  packContext(chapterId: string, selectedText?: string, writingStyleSummary?: string): PackedContext;
   buildPrompt(context: PackedContext, userInput: string, template: PromptTemplate): { systemPrompt: string; userPrompt: string };
   generate(request: AIGenerateRequest, onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
   extractWorldEntries(text: string, onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
