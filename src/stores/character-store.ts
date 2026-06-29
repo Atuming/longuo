@@ -137,5 +137,35 @@ export function createCharacterStore(eventBus?: EventBus): CharacterStore {
         snapshots.set(key, snapshot);
       }
     },
+
+    loadData(chars: Character[], snaps?: CharacterTimelineSnapshot[]): void {
+      characters.clear();
+      snapshots.clear();
+      for (const ch of chars) {
+        characters.set(ch.id, {
+          ...ch,
+          aliases: [...ch.aliases],
+          customAttributes: { ...ch.customAttributes },
+        });
+      }
+      if (snaps) {
+        for (const snap of snaps) {
+          const key = snapshotKey(snap.characterId, snap.timelinePointId);
+          snapshots.set(key, {
+            ...snap,
+            backstoryEvents: [...snap.backstoryEvents],
+            customAttributes: { ...snap.customAttributes },
+          });
+        }
+      }
+    },
+
+    listAllSnapshots(): CharacterTimelineSnapshot[] {
+      return Array.from(snapshots.values()).map((snap) => ({
+        ...snap,
+        backstoryEvents: [...snap.backstoryEvents],
+        customAttributes: { ...snap.customAttributes },
+      }));
+    },
   };
 }

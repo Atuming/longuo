@@ -401,6 +401,39 @@ export function createAIAssistantStore(initialConfig?: AIConfig): AIAssistantSto
       }
     },
 
+    searchHistory(projectId: string, query: string): AIHistoryRecord[] {
+      const records = loadHistory(projectId);
+      const q = query.toLowerCase().trim();
+      if (!q) return records.slice().reverse().map((r) => ({ ...r }));
+
+      return records
+        .filter((r) =>
+          r.userInput.toLowerCase().includes(q) ||
+          r.generatedContent.toLowerCase().includes(q) ||
+          r.skillLabel.toLowerCase().includes(q))
+        .reverse()
+        .map((r) => ({ ...r }));
+    },
+
+    exportHistoryMarkdown(projectId: string): string {
+      const records = loadHistory(projectId);
+      if (records.length === 0) return '# AI 生成历史\n\n暂无记录。';
+
+      const lines: string[] = ['# AI 生成历史', '', `共 ${records.length} 条记录`, ''];
+
+      for (const r of records.reverse()) {
+        const time = (() => {
+          try { return new Date(r.timestamp).toLocaleString('zh-CN'); } catch { return r.timestamp; }
+        })();
+        lines.push(`## ${r.skillLabel} — ${time}`, '');
+        lines.push('**输入：**', '', r.userInput, '');
+        lines.push('**生成内容：**', '', r.generatedContent, '');
+        lines.push('---', '');
+      }
+
+      return lines.join('\n');
+    },
+
     listSkills(): WritingSkill[] {
       return getMergedSkills();
     },

@@ -247,5 +247,12 @@ export function createChapterStore(options?: CreateChapterStoreOptions): Chapter
       const ch = chapters.get(id);
       return ch ? ch.wordCount : 0;
     },
+
+    loadData(data: Chapter[]): void {
+      chapters.clear();
+      for (const ch of data) {
+        chapters.set(ch.id, { ...ch });
+      }
+    },
   };
 }

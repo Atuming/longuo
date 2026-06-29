@@ -3,7 +3,9 @@ import type { Chapter } from './chapter';
 import type { Character } from './character';
 import type { ConsistencyIssue } from './consistency';
 import type { ExportOptions, ExportResult } from './export';
-import type { PackedContext, AIGenerateRequest, AIGenerateResult, AIProvider, PromptTemplate, WritingSkill, ScoredSkill } from './ai';
+import type { PackedContext, AIGenerateRequest, AIGenerateResult, AIProvider, PromptTemplate, WritingSkill, ScoredSkill, ConsistencyReport, ConversationMessage } from './ai';
+import type { StyleFingerprint } from '../lib/style-analyzer';
+import type { TokenUsage } from './ai';
 
 /** 文件管理器接口 */
 export interface FileManager {
@@ -30,11 +32,23 @@ export interface ExportEngine {
 /** AI 辅助引擎接口 */
 export interface AIAssistantEngine {
   packContext(chapterId: string, selectedText?: string, writingStyleSummary?: string): PackedContext;
-  buildPrompt(context: PackedContext, userInput: string, template: PromptTemplate): { systemPrompt: string; userPrompt: string };
+  buildPrompt(context: PackedContext, userInput: string, template: PromptTemplate, conversationHistory?: ConversationMessage[]): {
+    systemPrompt: string;
+    userPrompt: string;
+    messages: Array<{ role: string; content: string }>;
+  };
   generate(request: AIGenerateRequest, onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
   extractWorldEntries(text: string, onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
   validateConfig(provider: AIProvider): { valid: boolean; errors: string[] };
   abort(): void;
   resolveSkillPrompt(skill: WritingSkill, paramValues: Record<string, string>): string;
   recommendSkills(chapterId: string, skills: WritingSkill[]): ScoredSkill[];
+  /** 获取上下文 token 用量估算 */
+  estimateContextTokens(chapterId: string, userInput: string, selectedText?: string): TokenUsage;
+  /** AI 一致性检查 */
+  runConsistencyCheck(chapterId: string, onChunk?: (chunk: string) => void): Promise<ConsistencyReport>;
+  /** 分析写作风格指纹 */
+  analyzeStyle(chapterId: string): StyleFingerprint;
+  /** 执行技能链 */
+  runSkillPipeline(chapterId: string, skills: WritingSkill[], onChunk?: (chunk: string) => void): Promise<AIGenerateResult>;
 }

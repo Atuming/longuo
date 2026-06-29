@@ -1,4 +1,4 @@
-import type { NovelProject, RecentProject } from './project';
+import type { NovelFileData, NovelProject, RecentProject } from './project';
 import type { Chapter } from './chapter';
 import type { Character, CharacterTimelineSnapshot } from './character';
 import type { CharacterRelationship } from './relationship';
@@ -18,6 +18,9 @@ export interface ProjectStore {
   getCurrentProject(): NovelProject | null;
   getRecentProjects(): RecentProject[];
   updateProject(updates: Partial<Pick<NovelProject, 'name' | 'description'>>): Promise<void>;
+  getProjectData(): NovelFileData | null;
+  setProjectData(data: NovelFileData): void;
+  removeRecentProject(filePath: string): void;
 }
 
 /** 章节 Store */
@@ -29,6 +32,7 @@ export interface ChapterStore {
   deleteChapter(id: string): void;
   reorderChapter(id: string, newSortOrder: number, newParentId?: string | null): void;
   getWordCount(id: string): number;
+  loadData(chapters: Chapter[]): void;
 }
 
 /** 角色 Store */
@@ -41,6 +45,8 @@ export interface CharacterStore {
   deleteCharacter(id: string): void;
   getSnapshotAtTimeline(characterId: string, timelinePointId: string): CharacterTimelineSnapshot | undefined;
   setSnapshotAtTimeline(characterId: string, timelinePointId: string, data: Partial<Omit<CharacterTimelineSnapshot, 'id' | 'characterId' | 'timelinePointId'>>): void;
+  loadData(characters: Character[], snapshots?: CharacterTimelineSnapshot[]): void;
+  listAllSnapshots(): CharacterTimelineSnapshot[];
 }
 
 /** 关系 Store */
@@ -53,6 +59,7 @@ export interface RelationshipStore {
   updateRelationship(id: string, updates: Partial<Omit<CharacterRelationship, 'id' | 'projectId'>>): void;
   deleteRelationship(id: string): void;
   filterByType(projectId: string, type: CharacterRelationship['relationshipType']): CharacterRelationship[];
+  loadData(relationships: CharacterRelationship[]): void;
 }
 
 /** 世界观 Store */
@@ -71,6 +78,7 @@ export interface WorldStore {
   updateCustomCategory(projectId: string, key: string, label: string): void;
   deleteCustomCategory(projectId: string, key: string): void;
   getAllCategories(projectId: string): Array<{ key: string; label: string; color: { bg: string; text: string }; isBuiltIn: boolean }>;
+  loadData(entries: WorldEntry[], categories: CustomWorldCategory[], projectId: string): void;
 }
 
 /** 时间线 Store */
@@ -84,6 +92,7 @@ export interface TimelineStore {
   filterByChapter(projectId: string, chapterId: string): TimelinePoint[];
   filterByCharacter(projectId: string, characterId: string): TimelinePoint[];
   getReferences(id: string): { characterSnapshots: number; relationships: number };
+  loadData(points: TimelinePoint[]): void;
 }
 
 /** 情节 Store */
@@ -94,6 +103,7 @@ export interface PlotStore {
   filterByStatus(projectId: string, status: PlotThread['status']): PlotThread[];
   updateThread(id: string, updates: Partial<Omit<PlotThread, 'id' | 'projectId'>>): void;
   deleteThread(id: string): void;
+  loadData(threads: PlotThread[]): void;
 }
 
 /** AI 配置 Store */
@@ -116,6 +126,10 @@ export interface AIAssistantStore {
   listHistory(projectId: string): AIHistoryRecord[];
   getHistoryRecord(projectId: string, id: string): AIHistoryRecord | undefined;
   clearHistory(projectId: string): void;
+  /** 搜索历史记录 */
+  searchHistory(projectId: string, query: string): AIHistoryRecord[];
+  /** 导出历史记录为 Markdown */
+  exportHistoryMarkdown(projectId: string): string;
 
   // 技能管理
   listSkills(): WritingSkill[];

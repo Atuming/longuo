@@ -145,5 +145,12 @@ export function createRelationshipStore(options?: CreateRelationshipStoreOptions
       }
       return result;
     },
+
+    loadData(data: CharacterRelationship[]): void {
+      relationships.clear();
+      for (const rel of data) {
+        relationships.set(rel.id, { ...rel });
+      }
+    },
   };
 }

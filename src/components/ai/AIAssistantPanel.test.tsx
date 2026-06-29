@@ -40,6 +40,8 @@ function createMockAIStore(): AIAssistantStore {
     listHistory: vi.fn(() => []),
     getHistoryRecord: vi.fn(),
     clearHistory: vi.fn(),
+    searchHistory: vi.fn(() => []),
+    exportHistoryMarkdown: vi.fn(() => '# History'),
     listSkills: vi.fn(() => BUILT_IN_SKILLS.map((sk) => ({ ...sk, parameters: [...sk.parameters], contextHints: [...sk.contextHints] }))),
     getSkill: vi.fn(),
     addSkill: vi.fn(),
@@ -47,6 +49,9 @@ function createMockAIStore(): AIAssistantStore {
     deleteSkill: vi.fn(),
     resetSkill: vi.fn(),
     reorderSkills: vi.fn(),
+    setBuiltInSkills: vi.fn(),
+    getWritingStyle: vi.fn(() => ({ enabled: false, genre: '', genreCustom: '', narrativePov: '', languageStyle: '', tone: '', customNotes: '' })),
+    updateWritingStyle: vi.fn(),
   } as unknown as AIAssistantStore;
 }
 
@@ -55,12 +60,17 @@ function createMockAIEngine(
 ): AIAssistantEngine {
   return {
     packContext: vi.fn(),
-    buildPrompt: vi.fn(),
+    buildPrompt: vi.fn(() => ({ systemPrompt: '', userPrompt: '', messages: [] })),
     generate: generateFn ?? vi.fn().mockResolvedValue({ success: true, content: 'test' }),
+    extractWorldEntries: vi.fn().mockResolvedValue({ success: true, content: '[]' }),
     validateConfig: vi.fn(() => ({ valid: true, errors: [] })),
     abort: vi.fn(),
     resolveSkillPrompt: vi.fn((skill: WritingSkill) => skill.promptTemplate),
     recommendSkills: vi.fn(() => []),
+    estimateContextTokens: vi.fn(() => ({ estimatedInputTokens: 100, contextLimit: 8192, usageRatio: 0.01 })),
+    runConsistencyCheck: vi.fn().mockResolvedValue({ issues: [], summary: 'OK', checkedAt: new Date().toISOString() }),
+    analyzeStyle: vi.fn(() => ({ avgSentenceLength: 20, avgParagraphLength: 200, dialogueRatio: 0.1, topWords: [], styleDescription: '', confidence: 0.5 })),
+    runSkillPipeline: vi.fn().mockResolvedValue({ success: true, content: 'pipeline output' }),
   } as unknown as AIAssistantEngine;
 }
 

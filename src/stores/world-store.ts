@@ -189,5 +189,19 @@ export function createWorldStore(options?: CreateWorldStoreOptions): WorldStore 
 
       return result;
     },
+
+    loadData(entriesData: WorldEntry[], categories: CustomWorldCategory[], projectId: string): void {
+      entries.clear();
+      customCategories.clear();
+      for (const entry of entriesData) {
+        entries.set(entry.id, {
+          ...entry,
+          associatedCharacterIds: [...entry.associatedCharacterIds],
+        });
+      }
+      if (projectId && categories.length > 0) {
+        customCategories.set(projectId, categories.map((c) => ({ ...c })));
+      }
+    },
   };
 }

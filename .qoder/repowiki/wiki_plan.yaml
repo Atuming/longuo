@@ -1,0 +1,108 @@
+version: 1
+
+scope:
+  include:
+    - "src/**"
+    - "public/skills/**"
+    - "public/ai-config.json"
+    - "index.html"
+    - "vite.config.ts"
+    - "vitest.config.ts"
+    - "eslint.config.js"
+    - "tsconfig.app.json"
+    - "package.json"
+  exclude:
+    - "node_modules/**"
+    - "dist/**"
+    - "小说集/**"
+    - ".kiro/**"
+    - "docs/**"
+    - ".github/**"
+    - ".claude/**"
+
+repowiki:
+  template: architecture
+  notes:
+    - text: >
+        项目无状态管理库（非 Redux/Zustand），全部 store 采用闭包 + Map 模式，
+        getter 返回深拷贝实现防御性隔离。组件通过 refreshKey 计数器强制重渲染，
+        无订阅/通知机制。
+    - text: >
+        核心依赖 File System Access API（showSaveFilePicker/showOpenFilePicker），
+        仅支持 Chromium 内核浏览器（Chrome/Edge）。FileSystemFileHandle 通过
+        IndexedDB 持久化以实现跨会话文件访问。
+    - text: >
+        AI 配置采用双层机制：public/ai-config.json 作为权威数据源在运行时
+        fetch 加载，用户 UI 修改存 localStorage 作为会话内覆盖，重启后以
+        配置文件为准。
+    - text: >
+        NovelFileData 是所有 store 数据的聚合序列化目标，版本号 version: 1，
+        包含 chapters/characters/relationships/timelinePoints/worldEntries/
+        plotThreads/aiConfig/customWorldCategories/tagData 等全部领域数据。
+    - text: >
+        EventBus 是 store 间解耦的核心机制，支持 character:deleted、
+        chapter:deleted、timeline:created/updated/deleted 事件。删除角色时
+        级联清理 worldStore、timelineStore、relationshipStore、characterStore
+        快照中的引用。
+    - text: >
+        AI 引擎实现并发控制：每次 generate/extractWorldEntries 生成唯一
+        requestId，自动 abort 上一个活跃请求的 AbortController。流式接收
+        阶段使用 30 秒数据间隔超时（非整体超时），防止长时间无数据挂起。
+    - text: >
+        技能系统支持 YAML frontmatter 格式的技能定义文件，通过 skill-parser
+        解析为 WritingSkill 对象。内置技能从 public/skills/ 目录加载，
+        用户自定义技能存 localStorage，内置技能修改存为 override 覆盖层。
+    - text: >
+        CodeMirror 扩展层（cross-reference.ts）实现角色名高亮、@触发自动补全、
+        hover tooltip 三功能，基于正则交替匹配 + 可视范围扫描优化性能。
+    - text: >
+        导出引擎支持四种格式：Markdown（纯文本）、PDF（jsPDF）、EPUB（JSZip
+        手工打包 XHTML+OPF）、chapter-txt（每章一个 txt 压缩为 zip）。
+        PDF 导出含排版选项（字号/行高/页边距/字体）。
+
+  documents:
+    - title: "项目架构总览"
+      goal: "描述火龙果编辑器的整体架构、技术栈、分层设计和模块间依赖关系"
+      parent: ""
+    - title: "类型契约层"
+      goal: "描述 src/types/ 下的类型定义体系，包括领域模型、Store 接口、Engine 接口的契约设计"
+      parent: "项目架构总览"
+    - title: "状态管理层"
+      goal: "描述 11 个闭包式 store 的设计模式、防御性拷贝策略、EventBus 级联删除机制和持久化方案"
+      parent: "项目架构总览"
+    - title: "引擎层"
+      goal: "描述 AI 助手引擎、一致性检查引擎、导出引擎、文件管理器的职责和实现要点"
+      parent: "项目架构总览"
+    - title: "组件与页面层"
+      goal: "描述 React 组件分层结构、EditorStoreContext 依赖注入、EditorPage God Component 现状和 CodeMirror 编辑器集成"
+      parent: "项目架构总览"
+    - title: "AI 集成与技能系统"
+      goal: "描述 AI 生成流程、Prompt 模板系统、技能定义/解析/编排机制和写作风格注入"
+      parent: "项目架构总览"
+
+knowledgecard:
+  notes:
+    - text: >
+        Store 模式：每个 store 是工厂函数返回闭包对象，内部用 Map 存数据，
+        getter 返回深拷贝。createXxxStore(options) 接受 EventBus 实现跨 store
+        通信。store 不负责持久化，由 ProjectStore.saveProject 统一序列化。
+    - text: >
+        引擎模式：Engine 是纯逻辑层，依赖 store 接口（非实现）。AIAssistantEngine
+        依赖 chapterStore/characterStore/worldStore/timelineStore/aiStore 五个
+        接口，自身只管理并发控制状态（activeRequestId/activeController）。
+    - text: >
+        EventBus 级联机制：character:deleted 事件触发 worldStore 移除
+        associatedCharacterIds、timelineStore 移除 associatedCharacterIds、
+        relationshipStore 删除引用该角色的关系、characterStore 删除该角色
+        的所有快照。chapter:deleted 触发 timelineStore 和 plotStore 清理
+        associatedChapterIds、tagStore 清理章节标签关联。
+    - text: >
+        AI 并发控制：generate() 和 extractWorldEntries() 共享 activeRequestId/
+        activeController 闭包变量，新请求自动 abort 旧请求。onChunk 回调通过
+        guardedOnChunk 守卫，仅当 activeRequestId 匹配时才传递 chunk，
+        避免旧请求的流式数据污染新请求。
+    - text: >
+        技能系统：WritingSkill 包含 promptTemplate（含 {param:key} 占位符）、
+        parameters（text/number/select 类型）、contextHints（上下文推荐条件）、
+        references（参考资料文件）。内置技能 ID 稳定，自定义技能用 UUID。
+        用户修改内置技能存为 builtInOverrides 覆盖层，不修改原始定义。

@@ -4,7 +4,11 @@
       "Bash(npx vitest *)",
       "Bash(npx tsc *)",
       "Bash(npx eslint *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(npx vite *)",
+      "Bash(git stash *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/)",
+      "Bash(taskkill //F //IM node.exe)"
     ]
   }
 }

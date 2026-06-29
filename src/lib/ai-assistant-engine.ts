@@ -16,8 +16,17 @@ import type {
   ScoredSkill,
   ContextSignals,
   WritingStyle,
+  ConversationMessage,
+  TokenUsage,
+  ConsistencyReport,
+  ConsistencyReportIssue,
 } from '../types/ai';
+import type { Character } from '../types/character';
+import type { WorldEntry } from '../types/world';
 import { BUILT_IN_CATEGORIES } from '../types/world';
+import { estimateTokens, calculateBudget, estimateRequestTokens } from './token-counter';
+import { parseSSEStream } from './sse-parser';
+import { analyzeStyleFingerprint, type StyleFingerprint } from './style-analyzer';
 
 export interface AIAssistantEngineDeps {
   chapterStore: ChapterStore;
@@ -44,7 +53,7 @@ const PLACEHOLDERS = [
 function replacePlaceholders(template: string, values: Record<string, string>): string {
   let result = template;
   for (const placeholder of PLACEHOLDERS) {
-    const key = placeholder.slice(1, -1); // remove { }
+    const key = placeholder.slice(1, -1);
     result = result.replaceAll(placeholder, values[key] ?? '');
   }
   return result;
@@ -52,13 +61,8 @@ function replacePlaceholders(template: string, values: Record<string, string>): 
 
 /** 清理替换后 Prompt 中的空标签行和多余空行 */
 function cleanPrompt(prompt: string): string {
-  // 1. 移除空标签行：标签行后面紧跟空行，说明占位符为空
-  //    例如 "写作风格要求：\n\n" → 整段移除
-  //    但 "写作风格要求：\n【写作风格设定】\n" → 保留（下一行有内容）
   let result = prompt.replace(/^.*[：:]\s*\n(?=\s*\n)/gm, '');
-  // 2. 合并 3 个及以上连续空行为 2 个
   result = result.replace(/\n{3,}/g, '\n\n');
-  // 3. 去掉开头和结尾的空行
   return result.trim();
 }
 
@@ -91,13 +95,10 @@ function resolveParams(
   let result = template.replace(SKILL_PARAM_RE, (match, key: string) => {
     const value = paramValues[key];
     if (value && value.trim()) return value.trim();
-    // required 参数缺失时保留占位符
     if (requiredKeys.has(key)) return match;
-    // optional 参数缺失时替换为空
     return '';
   });
 
-  // 清理多余空格
   result = result.replace(/ {2,}/g, ' ').trim();
   return result;
 }
@@ -108,7 +109,6 @@ function analyzeSignals(context: PackedContext): ContextSignals {
   const wordCount = content.length;
   const hasDialogue = DIALOGUE_RE.test(content);
 
-  // isNearEnd：最后 100 个字符没有句末标点，或内容较短
   const tail = content.slice(-100).trim();
   const isNearEnd = tail.length > 0 && !SENTENCE_END_RE.test(tail);
 
@@ -190,23 +190,201 @@ export function buildWritingStyleSummary(style: WritingStyle): string {
     : '';
 }
 
+/* ───── 相关性评分工具 ───── */
+
+/** 计算角色与章节内容的相关性得分 */
+function characterRelevanceScore(char: Character, chapterContent: string): number {
+  let score = 0;
+  const content = chapterContent;
+  if (!char.name) return 0; // 空名字不参与评分
+  // 名字直接出现（高权重）
+  const nameRegex = new RegExp(char.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+  const nameMatches = (content.match(nameRegex) || []).length;
+  score += nameMatches * 3;
+
+  // 别名出现（中权重）
+  for (const alias of char.aliases) {
+    const aliasRegex = new RegExp(alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    const aliasMatches = (content.match(aliasRegex) || []).length;
+    score += aliasMatches * 2;
+  }
+
+  return score;
+}
+
+/** 计算世界观条目与章节内容的相关性得分 */
+function worldEntryRelevanceScore(entry: WorldEntry, chapterContent: string): number {
+  let score = 0;
+  const content = chapterContent;
+  // 名称出现
+  const nameRegex = new RegExp(entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+  score += (content.match(nameRegex) || []).length * 3;
+
+  // 描述关键词出现
+  const keywords = entry.description.split(/[，。、；\s]+/).filter((w) => w.length >= 2);
+  for (const kw of keywords.slice(0, 5)) {
+    if (content.includes(kw)) score += 1;
+  }
+
+  return score;
+}
+
+/* ───── API 调用基础设施 ───── */
+
+interface APIRequestConfig {
+  provider: AIProvider;
+  messages: Array<{ role: string; content: string }>;
+  onChunk?: (chunk: string) => void;
+}
+
+/**
+ * 发送 OpenAI 兼容的 API 请求（共享核心逻辑）。
+ * 由 generate()、extractWorldEntries()、runConsistencyCheck() 共用。
+ */
+async function callAIAPI(config: APIRequestConfig, activeState: {
+  getRequestId: () => string | null;
+  setRequestId: (id: string | null) => void;
+  getController: () => AbortController | null;
+  setController: (c: AbortController | null) => void;
+}): Promise<AIGenerateResult> {
+  const { provider, messages, onChunk } = config;
+  const requestId = crypto.randomUUID();
+
+  // 取消上一个活跃请求
+  const prevController = activeState.getController();
+  if (prevController) prevController.abort();
+
+  const controller = new AbortController();
+  activeState.setRequestId(requestId);
+  activeState.setController(controller);
+
+  const requestBody: Record<string, unknown> = {
+    model: provider.modelName,
+    messages,
+    stream: !!onChunk,
+  };
+
+  // 注入生成控制参数
+  if ((provider.temperature ?? 0) > 0) requestBody['temperature'] = provider.temperature;
+  if ((provider.maxTokens ?? 0) > 0) requestBody['max_tokens'] = provider.maxTokens;
+  const topP = provider.topP ?? 1;
+  if (topP > 0 && topP < 1) requestBody['top_p'] = topP;
+  if ((provider.presencePenalty ?? 0) !== 0) requestBody['presence_penalty'] = provider.presencePenalty;
+  if ((provider.frequencyPenalty ?? 0) !== 0) requestBody['frequency_penalty'] = provider.frequencyPenalty;
+
+  const body = JSON.stringify(requestBody);
+  const timeoutMs = provider.timeoutMs;
+
+  const timeoutId = setTimeout(() => {
+    if (activeState.getRequestId() === requestId) controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(provider.apiEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
+      body,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const statusMessages: Record<number, string> = {
+        401: 'API Key 无效或已过期，请检查配置。',
+        403: 'API Key 无效或已过期，请检查配置。',
+        429: '请求过于频繁，请稍后重试。',
+      };
+      const errorMsg = statusMessages[response.status] ??
+        (response.status >= 500 ? 'AI 服务暂时不可用，请稍后重试。' : `请求失败（HTTP ${response.status}）。`);
+      return { success: false, error: errorMsg };
+    }
+
+    // 流式响应 — 使用共享 SSE 解析器
+    if (onChunk && response.body) {
+      let streamIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const result = await parseSSEStream({
+        reader: response.body.getReader(),
+        idleTimeoutMs: 30000,
+        signal: controller.signal,
+        onChunk,
+        requestId,
+        getActiveRequestId: () => activeState.getRequestId(),
+        setIdleTimer: (timer) => { streamIdleTimer = timer; },
+      });
+
+      if (streamIdleTimer) clearTimeout(streamIdleTimer);
+
+      // 请求正常完成，清理状态
+      if (activeState.getRequestId() === requestId) {
+        activeState.setRequestId(null);
+        activeState.setController(null);
+      }
+
+      if (!result.success) {
+        return result;
+      }
+      return { success: true, content: result.content, truncated: result.truncated };
+    }
+
+    // 非流式响应
+    const json = await response.json();
+    const content = json.choices?.[0]?.message?.content ?? '';
+
+    if (activeState.getRequestId() === requestId) {
+      activeState.setRequestId(null);
+      activeState.setController(null);
+    }
+
+    if (!content) {
+      return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
+    }
+    return { success: true, content };
+  } catch (error: unknown) {
+    clearTimeout(timeoutId);
+
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (activeState.getRequestId() !== requestId) {
+        return { success: false, cancelled: true };
+      }
+      activeState.setRequestId(null);
+      activeState.setController(null);
+      return { success: false, error: '请求超时，请增加超时时间或缩短输入内容后重试。' };
+    }
+    if (error instanceof TypeError) {
+      return { success: false, error: '网络错误，请检查网络连接后重试。' };
+    }
+    return { success: false, error: `请求失败：${error instanceof Error ? error.message : '未知错误'}` };
+  }
+}
+
 /**
  * 创建 AIAssistantEngine 实例。
- * 负责上下文打包、Prompt 组装、AI API 调用和配置验证。
  */
 export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistantEngine {
   const { chapterStore, characterStore, worldStore, timelineStore, aiStore } = deps;
 
-  // 并发控制状态（闭包变量）
+  // 并发控制状态
   let activeRequestId: string | null = null;
   let activeController: AbortController | null = null;
 
+  const activeState = {
+    getRequestId: () => activeRequestId,
+    setRequestId: (id: string | null) => { activeRequestId = id; },
+    getController: () => activeController,
+    setController: (c: AbortController | null) => { activeController = c; },
+  };
+
   return {
+    /* ══════════════════════════════════════════════════════════════
+       packContext — 上下文打包（含相关性过滤 + Token 预算管理）
+       ══════════════════════════════════════════════════════════════ */
     packContext(chapterId: string, selectedText?: string, writingStyleSummary?: string): PackedContext {
       const chapter = chapterStore.getChapter(chapterId);
       const chapterContent = chapter?.content ?? '';
 
-      // 获取同项目所有章节（树形排序），找到当前章节的前后章节
+      // 获取前后章节摘要
       let prevChapterSummary = '';
       let nextChapterSummary = '';
       if (chapter) {
@@ -222,68 +400,100 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         }
       }
 
-      // 获取关联角色信息，使用叙事化格式
+      // ── 角色信息（相关性过滤）──
       let characterInfo = '';
       if (chapter) {
-        const characterIds = new Set<string>();
+        const allChars = characterStore.listCharacters(chapter.projectId);
+
+        // 获取时间线关联的角色 ID
+        const timelineCharIds = new Set<string>();
         const timelinePoints = timelineStore.filterByChapter(chapter.projectId, chapterId);
         for (const tp of timelinePoints) {
           for (const cid of tp.associatedCharacterIds) {
-            characterIds.add(cid);
+            timelineCharIds.add(cid);
           }
         }
-        // 如果时间线没有关联角色，则获取项目中所有角色
-        if (characterIds.size === 0) {
-          const allChars = characterStore.listCharacters(chapter.projectId);
-          for (const c of allChars) {
-            characterIds.add(c.id);
-          }
-        }
+
+        // 计算每个角色的相关性得分
+        const scored = allChars.map((char) => ({
+          char,
+          score: characterRelevanceScore(char, chapterContent),
+          isTimelineLinked: timelineCharIds.has(char.id),
+        }));
+
+        // 时间线关联的角色始终包含，其余按相关性排序
+        const relevant = scored
+          .filter((s) => s.score > 0 || s.isTimelineLinked)
+          .sort((a, b) => {
+            if (a.isTimelineLinked !== b.isTimelineLinked) return a.isTimelineLinked ? -1 : 1;
+            return b.score - a.score;
+          });
+
+        // 最多包含 15 个角色（避免上下文溢出）
+        const selected = relevant.slice(0, 15);
+
+        // 如果时间线没有关联角色且相关性过滤后为空，回退到前 10 个
+        const charsToInclude = selected.length > 0 ? selected : scored.slice(0, 10);
+
         const charInfoParts: string[] = [];
-        for (const cid of characterIds) {
-          const char = characterStore.getCharacter(cid);
-          if (!char) continue;
+        for (const { char } of charsToInclude) {
           const parts: string[] = [];
           parts.push(`- ${char.name}`);
-          if (char.aliases.length > 0) {
-            parts.push(`（别名：${char.aliases.join('、')}）`);
-          }
-          if (char.appearance) {
-            parts.push(`\n  外貌特征：${char.appearance}`);
-          }
-          if (char.personality) {
-            parts.push(`\n  性格特点：${char.personality}`);
-          }
-          if (char.backstory) {
-            parts.push(`\n  背景故事：${char.backstory}`);
-          }
+          if (char.aliases.length > 0) parts.push(`（别名：${char.aliases.join('、')}）`);
+          if (char.appearance) parts.push(`\n  外貌：${char.appearance}`);
+          if (char.personality) parts.push(`\n  性格：${char.personality}`);
+          if (char.backstory) parts.push(`\n  背景：${char.backstory}`);
           charInfoParts.push(parts.join(''));
         }
+
+        if (charsToInclude.length < allChars.length) {
+          charInfoParts.push(`\n（共 ${allChars.length} 个角色，此处仅展示与当前章节相关的 ${charsToInclude.length} 个）`);
+        }
+
         characterInfo = charInfoParts.join('\n');
       }
 
-      // 获取世界观背景设定（补全所有 11 种类型标签）
+      // ── 世界观设定（相关性过滤）──
       let worldSetting = '';
       if (chapter) {
         const entries = worldStore.listEntries(chapter.projectId);
         if (entries.length > 0) {
+          // 按相关性排序
+          const scored = entries.map((entry) => ({
+            entry,
+            score: worldEntryRelevanceScore(entry, chapterContent),
+          }));
+          const relevant = scored
+            .filter((s) => s.score > 0)
+            .sort((a, b) => b.score - a.score);
+
+          // 最多 20 条世界观设定
+          const selected = relevant.length > 0
+            ? relevant.slice(0, 20)
+            : scored.slice(0, 10);
+
           const worldParts: string[] = [];
-          for (const entry of entries) {
+          for (const { entry } of selected) {
             const catInfo = BUILT_IN_CATEGORIES.find((c) => c.key === entry.type);
             const typeLabel = catInfo?.label ?? entry.type;
             worldParts.push(`- 【${typeLabel}】${entry.name}：${entry.description}`);
           }
+
+          if (selected.length < entries.length) {
+            worldParts.push(`\n（共 ${entries.length} 条世界观设定，此处仅展示相关的 ${selected.length} 条）`);
+          }
+
           worldSetting = worldParts.join('\n');
         }
       }
 
-      // 获取时间线上下文
+      // ── 时间线上下文 ──
       let timelineContext = '';
       if (chapter) {
         const points = timelineStore.filterByChapter(chapter.projectId, chapterId);
         if (points.length > 0) {
           const timelineParts: string[] = [];
-          for (const tp of points) {
+          for (const tp of points.slice(0, 10)) {
             const charNames: string[] = [];
             for (const cid of tp.associatedCharacterIds) {
               const c = characterStore.getCharacter(cid);
@@ -296,16 +506,14 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         }
       }
 
-      // 选中的文本段落
-      const effectiveSelectedText = selectedText && selectedText.trim()
-        ? selectedText.trim()
-        : '';
+      // ── 选中文本 ──
+      const effectiveSelectedText = selectedText?.trim() || '';
 
-      // 写作风格摘要（如果没有传入则从 store 读取）
+      // ── 写作风格摘要 ──
       let effectiveStyleSummary = writingStyleSummary ?? '';
       if (!effectiveStyleSummary) {
         const style = aiStore.getWritingStyle();
-        if (style && style.enabled) {
+        if (style?.enabled) {
           effectiveStyleSummary = buildWritingStyleSummary(style);
         }
       }
@@ -322,19 +530,12 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
       };
     },
 
-    abort(): void {
-      if (activeController) {
-        activeController.abort();
-        activeController = null;
-      }
-      activeRequestId = null;
-    },
-
-    buildPrompt(
-      context: PackedContext,
-      userInput: string,
-      template: PromptTemplate,
-    ): { systemPrompt: string; userPrompt: string } {
+    /* ══════════════════════════════════════════════════════════════
+       estimateContextTokens
+       ══════════════════════════════════════════════════════════════ */
+    estimateContextTokens(chapterId: string, userInput: string, selectedText?: string): TokenUsage {
+      const context = this.packContext(chapterId, selectedText);
+      const template = aiStore.getActiveTemplate();
       const values: Record<string, string> = {
         chapter_content: context.chapterContent,
         prev_chapter_summary: context.prevChapterSummary,
@@ -347,244 +548,118 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         user_input: userInput,
       };
 
-      return {
-        systemPrompt: cleanPrompt(replacePlaceholders(template.systemPrompt, values)),
-        userPrompt: cleanPrompt(replacePlaceholders(template.userPromptTemplate, values)),
-      };
+      const systemPrompt = cleanPrompt(replacePlaceholders(template.systemPrompt, values));
+      const userPrompt = cleanPrompt(replacePlaceholders(template.userPromptTemplate, values));
+      const inputTokens = estimateRequestTokens(systemPrompt, userPrompt);
+
+      const provider = aiStore.getActiveProvider();
+      const contextLimit = calculateBudget(provider?.modelName);
+      const usageRatio = inputTokens / contextLimit;
+
+      return { estimatedInputTokens: inputTokens, contextLimit, usageRatio };
     },
 
+    /* ══════════════════════════════════════════════════════════════
+       abort
+       ══════════════════════════════════════════════════════════════ */
+    abort(): void {
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+      activeRequestId = null;
+    },
+
+    /* ══════════════════════════════════════════════════════════════
+       buildPrompt — 支持多轮对话
+       ══════════════════════════════════════════════════════════════ */
+    buildPrompt(
+      context: PackedContext,
+      userInput: string,
+      template: PromptTemplate,
+      conversationHistory?: ConversationMessage[],
+    ): { systemPrompt: string; userPrompt: string; messages: Array<{ role: string; content: string }> } {
+      const values: Record<string, string> = {
+        chapter_content: context.chapterContent,
+        prev_chapter_summary: context.prevChapterSummary,
+        next_chapter_summary: context.nextChapterSummary,
+        character_info: context.characterInfo,
+        world_setting: context.worldSetting,
+        timeline_context: context.timelineContext,
+        selected_text: context.selectedText,
+        writing_style: context.writingStyleSummary,
+        user_input: userInput,
+      };
+
+      const systemPrompt = cleanPrompt(replacePlaceholders(template.systemPrompt, values));
+      const userPrompt = cleanPrompt(replacePlaceholders(template.userPromptTemplate, values));
+
+      // 构建消息列表（支持多轮对话）
+      const messages: Array<{ role: string; content: string }> = [
+        { role: 'system', content: systemPrompt },
+      ];
+
+      // 插入对话历史（如果有）
+      if (conversationHistory && conversationHistory.length > 0) {
+        for (const msg of conversationHistory) {
+          messages.push({ role: msg.role, content: msg.content });
+        }
+      }
+
+      messages.push({ role: 'user', content: userPrompt });
+
+      return { systemPrompt, userPrompt, messages };
+    },
+
+    /* ══════════════════════════════════════════════════════════════
+       generate — 使用共享 SSE 解析器 + Token 报告
+       ══════════════════════════════════════════════════════════════ */
     async generate(
       request: AIGenerateRequest,
       onChunk?: (chunk: string) => void,
     ): Promise<AIGenerateResult> {
-      // 1. 生成唯一请求 ID
-      const requestId = crypto.randomUUID();
-
-      // 2. 自动取消上一个活跃请求
-      if (activeController) {
-        activeController.abort();
-      }
-
-      // 3. 创建新的 AbortController，更新闭包状态
-      const controller = new AbortController();
-      activeRequestId = requestId;
-      activeController = controller;
-
-      // 获取当前活跃的 provider
       const provider = aiStore.getActiveProvider();
       if (!provider) {
         return { success: false, error: 'AI 模型未配置，请前往设置页面配置 AI 模型提供商。' };
       }
 
-      // 验证配置
       const validation = this.validateConfig(provider);
       if (!validation.valid) {
         return { success: false, error: `AI 配置无效：${validation.errors.join('；')}` };
       }
 
-      // 打包上下文并构建 Prompt
-      const context = this.packContext(
-        request.chapterId,
-        request.selectedText,
-      );
+      const context = this.packContext(request.chapterId, request.selectedText);
       const template = aiStore.getActiveTemplate();
-      const { systemPrompt, userPrompt } = this.buildPrompt(context, request.userInput, template);
+      const { messages } = this.buildPrompt(context, request.userInput, template, request.conversationHistory);
 
-      // 构建请求体（OpenAI 兼容格式）
-      const requestBody: Record<string, unknown> = {
-        model: provider.modelName,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        stream: !!onChunk,
-      };
+      // 计算 token 用量
+      const allContent = messages.map((m) => m.content).join('\n');
+      const inputTokens = estimateTokens(allContent);
+      const contextLimit = calculateBudget(provider.modelName);
 
-      // 注入生成控制参数
-      if ((provider.temperature ?? 0) > 0) {
-        requestBody['temperature'] = provider.temperature;
-      }
-      if ((provider.maxTokens ?? 0) > 0) {
-        requestBody['max_tokens'] = provider.maxTokens;
-      }
-      const topP = provider.topP ?? 1;
-      if (topP > 0 && topP < 1) {
-        requestBody['top_p'] = topP;
-      }
-      if ((provider.presencePenalty ?? 0) !== 0) {
-        requestBody['presence_penalty'] = provider.presencePenalty;
-      }
-      if ((provider.frequencyPenalty ?? 0) !== 0) {
-        requestBody['frequency_penalty'] = provider.frequencyPenalty;
+      const result = await callAIAPI({ provider, messages, onChunk }, activeState);
+
+      if (result.success && result.content) {
+        result.tokenUsage = { estimatedInputTokens: inputTokens, contextLimit, usageRatio: inputTokens / contextLimit };
       }
 
-      const body = JSON.stringify(requestBody);
-
-      // 4. 超时控制：连接阶段使用 provider.timeoutMs
-      //      流式接收阶段改用数据间隔超时（30秒无新数据则中断）
-      const STREAM_IDLE_TIMEOUT_MS = 30000;
-      let streamIdleTimer: ReturnType<typeof setTimeout> | null = null;
-
-      const timeoutId = setTimeout(() => {
-        if (activeRequestId === requestId) {
-          controller.abort();
-        }
-      }, provider.timeoutMs);
-
-      try {
-        const response = await fetch(provider.apiEndpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${provider.apiKey}`,
-          },
-          body,
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          const statusMessages: Record<number, string> = {
-            401: 'API Key 无效或已过期，请检查配置。',
-            403: 'API Key 无效或已过期，请检查配置。',
-            429: '请求过于频繁，请稍后重试。',
-          };
-          const errorMsg =
-            statusMessages[response.status] ??
-            (response.status >= 500
-              ? 'AI 服务暂时不可用，请稍后重试。'
-              : `请求失败（HTTP ${response.status}）。`);
-          return { success: false, error: errorMsg };
-        }
-
-        // 流式响应处理
-        if (onChunk && response.body) {
-          // onChunk 守卫：仅当请求仍为活跃请求时才传递 chunk
-          const guardedOnChunk = (chunk: string) => {
-            if (activeRequestId === requestId) {
-              onChunk(chunk);
-            }
-          };
-
-          let fullContent = '';
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-
-          // 启动流式数据间隔超时
-          const resetStreamIdleTimer = () => {
-            if (streamIdleTimer) clearTimeout(streamIdleTimer);
-            streamIdleTimer = setTimeout(() => {
-              if (activeRequestId === requestId) {
-                controller.abort();
-              }
-            }, STREAM_IDLE_TIMEOUT_MS);
-          };
-          resetStreamIdleTimer();
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              // 收到数据，重置间隔超时
-              resetStreamIdleTimer();
-
-              const text = decoder.decode(value, { stream: true });
-              // 解析 SSE 格式
-              const lines = text.split('\n');
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  const data = line.slice(6).trim();
-                  if (data === '[DONE]') continue;
-                  try {
-                    const parsed = JSON.parse(data);
-                    const chunk = parsed.choices?.[0]?.delta?.content ?? '';
-                    if (chunk) {
-                      fullContent += chunk;
-                      guardedOnChunk(chunk);
-                    }
-                  } catch {
-                    // Skip malformed JSON lines
-                  }
-                }
-              }
-            }
-          } catch {
-            // 流式中断，保留已接收内容
-            if (streamIdleTimer) clearTimeout(streamIdleTimer);
-            if (fullContent) {
-              return { success: true, content: fullContent };
-            }
-            return { success: false, error: '流式响应中断，未接收到有效内容。' };
-          }
-
-          if (streamIdleTimer) clearTimeout(streamIdleTimer);
-
-          // 请求正常完成后清理闭包状态
-          if (activeRequestId === requestId) {
-            activeRequestId = null;
-            activeController = null;
-          }
-
-          if (!fullContent) {
-            return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
-          }
-          return { success: true, content: fullContent };
-        }
-
-        // 非流式响应
-        const json = await response.json();
-        const content = json.choices?.[0]?.message?.content ?? '';
-
-        // 请求正常完成后清理闭包状态
-        if (activeRequestId === requestId) {
-          activeRequestId = null;
-          activeController = null;
-        }
-
-        if (!content) {
-          return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
-        }
-        return { success: true, content };
-      } catch (error: unknown) {
-        clearTimeout(timeoutId);
-
-        // 区分取消和超时
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          if (activeRequestId !== requestId) {
-            // 被新请求取消，返回 cancelled 标识
-            return { success: false, cancelled: true };
-          }
-          // 超时取消，清理闭包状态
-          activeRequestId = null;
-          activeController = null;
-          return { success: false, error: '请求超时，请增加超时时间或缩短输入内容后重试。' };
-        }
-        if (error instanceof TypeError) {
-          return { success: false, error: '网络错误，请检查网络连接后重试。' };
-        }
-        return {
-          success: false,
-          error: `请求失败：${error instanceof Error ? error.message : '未知错误'}`,
-        };
-      }
+      return result;
     },
 
+    /* ══════════════════════════════════════════════════════════════
+       validateConfig
+       ══════════════════════════════════════════════════════════════ */
     validateConfig(provider: AIProvider): { valid: boolean; errors: string[] } {
       const errors: string[] = [];
-      if (!provider.apiKey || provider.apiKey.trim() === '') {
-        errors.push('API Key 不能为空');
-      }
-      if (!provider.apiEndpoint || provider.apiEndpoint.trim() === '') {
-        errors.push('API 端点 URL 不能为空');
-      }
-      if (!provider.modelName || provider.modelName.trim() === '') {
-        errors.push('模型名称不能为空');
-      }
+      if (!provider.apiKey?.trim()) errors.push('API Key 不能为空');
+      if (!provider.apiEndpoint?.trim()) errors.push('API 端点 URL 不能为空');
+      if (!provider.modelName?.trim()) errors.push('模型名称不能为空');
       return { valid: errors.length === 0, errors };
     },
 
+    /* ══════════════════════════════════════════════════════════════
+       resolveSkillPrompt
+       ══════════════════════════════════════════════════════════════ */
     resolveSkillPrompt(skill: WritingSkill, paramValues: Record<string, string>): string {
       let result = resolveParams(skill.promptTemplate, paramValues, skill);
 
@@ -598,17 +673,18 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
       return result;
     },
 
+    /* ══════════════════════════════════════════════════════════════
+       recommendSkills
+       ══════════════════════════════════════════════════════════════ */
     recommendSkills(chapterId: string, skills: WritingSkill[]): ScoredSkill[] {
       const context = this.packContext(chapterId);
       const signals = analyzeSignals(context);
-
       const scored: ScoredSkill[] = [];
 
       for (const skill of skills) {
         if (!skill.enabled) continue;
 
         if (skill.contextHints.length === 0) {
-          // 没有推荐条件的技能给中性分数
           scored.push({ skill, score: 0.5, matchedSignals: [] });
           continue;
         }
@@ -634,38 +710,13 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
       return scored;
     },
 
+    /* ══════════════════════════════════════════════════════════════
+       extractWorldEntries — 使用共享 SSE 解析器 + 可配置模板
+       ══════════════════════════════════════════════════════════════ */
     async extractWorldEntries(
       text: string,
       onChunk?: (chunk: string) => void,
     ): Promise<AIGenerateResult> {
-      const categoryList = BUILT_IN_CATEGORIES.map((c) => `${c.key}（${c.label}）`).join('、');
-
-      const systemPrompt =
-        '你是一个小说资料提取助手。你的任务是从给定的文本中同时提取两类信息：角色和世界观设定。' +
-        '输出严格的 JSON 对象格式，不要包含任何其他文字说明。' +
-        'JSON 结构如下：{"characters":[...],"worldEntries":[...]}\n' +
-        'characters 数组中每个元素包含：name（姓名）、aliases（别名列表，字符串数组）、appearance（外貌描写）、personality（性格特点）、backstory（背景故事）。' +
-        'worldEntries 数组中每个元素包含：name（名称）、type（分类 key）、description（详细描述）。' +
-        `worldEntries 的 type 取值：${categoryList}。` +
-        '重要区分：具体的有名字的个体（如"张三""李长老"）归入 characters；抽象设定（如"青云门""灵石""修仙体系"）归入 worldEntries。' +
-        '种族分类只用于物种大类（如"人族""妖族"），不要把具体角色放入种族。' +
-        '如果某一类没有提取到结果，对应数组为空。' +
-        '示例输出：{"characters":[{"name":"张三","aliases":["三哥"],"appearance":"身高八尺，剑眉星目","personality":"沉稳内敛，重情重义","backstory":"青云门内门弟子，幼年丧父"}],"worldEntries":[{"name":"青云门","type":"faction","description":"修仙界第一大宗门"},{"name":"灵石","type":"economy","description":"修仙界通用货币"}]}';
-
-      const userPrompt = `请从以下文本中同时提取角色信息和世界观设定：\n\n${text}`;
-
-      // 生成唯一请求 ID
-      const requestId = crypto.randomUUID();
-
-      // 自动取消上一个活跃请求
-      if (activeController) {
-        activeController.abort();
-      }
-
-      const controller = new AbortController();
-      activeRequestId = requestId;
-      activeController = controller;
-
       const provider = aiStore.getActiveProvider();
       if (!provider) {
         return { success: false, error: 'AI 模型未配置，请前往设置页面配置 AI 模型提供商。' };
@@ -676,170 +727,205 @@ export function createAIAssistantEngine(deps: AIAssistantEngineDeps): AIAssistan
         return { success: false, error: `AI 配置无效：${validation.errors.join('；')}` };
       }
 
-      const requestBody: Record<string, unknown> = {
-        model: provider.modelName,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        stream: !!onChunk,
-      };
+      // 尝试从技能列表中获取"从文档导入"技能的模板
+      const extractSkill = aiStore.getSkill('builtin-extract-world');
+      let systemPrompt: string;
+      let userPrompt: string;
 
-      // 注入生成控制参数
-      if ((provider.temperature ?? 0) > 0) {
-        requestBody['temperature'] = provider.temperature;
+      if (extractSkill?.promptTemplate) {
+        // 使用技能模板（可配置）
+        const categoryList = BUILT_IN_CATEGORIES.map((c) => `${c.key}（${c.label}）`).join('、');
+        systemPrompt = extractSkill.promptTemplate.replace(/\{category_list\}/g, categoryList);
+        userPrompt = `请从以下文本中同时提取角色信息和世界观设定：\n\n${text}`;
+      } else {
+        // 回退到硬编码模板
+        const categoryList = BUILT_IN_CATEGORIES.map((c) => `${c.key}（${c.label}）`).join('、');
+        systemPrompt =
+          '你是一个小说资料提取助手。你的任务是从给定的文本中同时提取两类信息：角色和世界观设定。' +
+          '输出严格的 JSON 对象格式，不要包含任何其他文字说明。' +
+          'JSON 结构如下：{"characters":[...],"worldEntries":[...]}\n' +
+          'characters 数组中每个元素包含：name（姓名）、aliases（别名列表，字符串数组）、appearance（外貌描写）、personality（性格特点）、backstory（背景故事）。' +
+          'worldEntries 数组中每个元素包含：name（名称）、type（分类 key）、description（详细描述）。' +
+          `worldEntries 的 type 取值：${categoryList}。` +
+          '重要区分：具体的有名字的个体（如"张三""李长老"）归入 characters；抽象设定（如"青云门""灵石""修仙体系"）归入 worldEntries。' +
+          '种族分类只用于物种大类（如"人族""妖族"），不要把具体角色放入种族。' +
+          '如果某一类没有提取到结果，对应数组为空。';
+        userPrompt = `请从以下文本中同时提取角色信息和世界观设定：\n\n${text}`;
       }
-      if ((provider.maxTokens ?? 0) > 0) {
-        requestBody['max_tokens'] = provider.maxTokens;
+
+      const messages: Array<{ role: string; content: string }> = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ];
+
+      return callAIAPI({ provider, messages, onChunk }, activeState);
+    },
+
+    /* ══════════════════════════════════════════════════════════════
+       runConsistencyCheck — AI 一致性检查
+       ══════════════════════════════════════════════════════════════ */
+    async runConsistencyCheck(chapterId: string, onChunk?: (chunk: string) => void): Promise<ConsistencyReport> {
+      const provider = aiStore.getActiveProvider();
+      if (!provider) {
+        return { issues: [], summary: 'AI 模型未配置，无法执行一致性检查。', checkedAt: new Date().toISOString() };
       }
-      const topP = provider.topP ?? 1;
-      if (topP > 0 && topP < 1) {
-        requestBody['top_p'] = topP;
+
+      const validation = this.validateConfig(provider);
+      if (!validation.valid) {
+        return { issues: [], summary: 'AI 配置无效。', checkedAt: new Date().toISOString() };
       }
 
-      const body = JSON.stringify(requestBody);
+      const context = this.packContext(chapterId);
+      const chapter = chapterStore.getChapter(chapterId);
 
-      // 超时控制：连接阶段使用 provider.timeoutMs
-      //      流式接收阶段改用数据间隔超时（30秒无新数据则中断）
-      const STREAM_IDLE_TIMEOUT_MS = 30000;
-      let streamIdleTimer: ReturnType<typeof setTimeout> | null = null;
+      // 收集前面几章内容用于对比
+      let previousChaptersContent = '';
+      if (chapter) {
+        const allChapters = chapterStore.listChapters(chapter.projectId);
+        const currentIndex = allChapters.findIndex((c) => c.id === chapterId);
+        const prevChapters = allChapters.slice(Math.max(0, currentIndex - 3), currentIndex);
+        previousChaptersContent = prevChapters
+          .map((c) => `### ${c.title}\n${c.content.slice(0, 500)}`)
+          .join('\n\n');
+      }
 
-      const timeoutId = setTimeout(() => {
-        if (activeRequestId === requestId) {
-          controller.abort();
-        }
-      }, provider.timeoutMs);
+      const systemPrompt =
+        '你是一位资深小说编辑，专门负责检查小说的一致性。请对当前章节进行全面的一致性分析。\n\n' +
+        '检查维度：\n' +
+        '1. 角色一致性：角色性格、行为、说话方式是否与设定及前文一致\n' +
+        '2. 时间线一致性：事件发生顺序是否合理，有无时间矛盾\n' +
+        '3. 情节连贯性：情节发展是否符合前文铺垫，伏笔是否被遗漏\n' +
+        '4. 世界观一致性：设定是否前后矛盾\n' +
+        '5. 称呼一致性：角色名称、称号是否前后统一\n\n' +
+        '请以严格的 JSON 格式输出检查报告：\n' +
+        '{"issues":[{"category":"character|timeline|plot|world|naming","severity":"critical|warning|info","title":"简短标题","description":"详细说明","location":"问题位置引用","suggestion":"修改建议"}],"summary":"总体评价"}\n' +
+        '如果没有发现问题，issues 为空数组，summary 中说明未发现明显问题。';
 
-      try {
-        const response = await fetch(provider.apiEndpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${provider.apiKey}`,
-          },
-          body,
-          signal: controller.signal,
-        });
+      const userPrompt =
+        `请检查以下章节的一致性：\n\n` +
+        `【当前章节】${chapter?.title ?? ''}\n${context.chapterContent.slice(0, 3000)}\n\n` +
+        `【前文章节摘要】\n${previousChaptersContent || '无'}\n\n` +
+        `【角色信息】\n${context.characterInfo.slice(0, 1500)}\n\n` +
+        `【世界观设定】\n${context.worldSetting.slice(0, 1000)}\n\n` +
+        `【时间线】\n${context.timelineContext.slice(0, 500)}`;
 
-        clearTimeout(timeoutId);
+      const messages: Array<{ role: string; content: string }> = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ];
 
-        if (!response.ok) {
-          const statusMessages: Record<number, string> = {
-            401: 'API Key 无效或已过期，请检查配置。',
-            403: 'API Key 无效或已过期，请检查配置。',
-            429: '请求过于频繁，请稍后重试。',
-          };
-          const errorMsg =
-            statusMessages[response.status] ??
-            (response.status >= 500
-              ? 'AI 服务暂时不可用，请稍后重试。'
-              : `请求失败（HTTP ${response.status}）。`);
-          return { success: false, error: errorMsg };
-        }
+      const result = await callAIAPI({ provider, messages, onChunk }, activeState);
 
-        // 流式响应处理
-        if (onChunk && response.body) {
-          const guardedOnChunk = (chunk: string) => {
-            if (activeRequestId === requestId) {
-              onChunk(chunk);
-            }
-          };
-
-          let fullContent = '';
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-
-          // 启动流式数据间隔超时
-          const resetStreamIdleTimer = () => {
-            if (streamIdleTimer) clearTimeout(streamIdleTimer);
-            streamIdleTimer = setTimeout(() => {
-              if (activeRequestId === requestId) {
-                controller.abort();
-              }
-            }, STREAM_IDLE_TIMEOUT_MS);
-          };
-          resetStreamIdleTimer();
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              // 收到数据，重置间隔超时
-              resetStreamIdleTimer();
-
-              const decoded = decoder.decode(value, { stream: true });
-              const lines = decoded.split('\n');
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  const data = line.slice(6).trim();
-                  if (data === '[DONE]') continue;
-                  try {
-                    const parsed = JSON.parse(data);
-                    const chunk = parsed.choices?.[0]?.delta?.content ?? '';
-                    if (chunk) {
-                      fullContent += chunk;
-                      guardedOnChunk(chunk);
-                    }
-                  } catch {
-                    // Skip malformed JSON lines
-                  }
-                }
-              }
-            }
-          } catch {
-            if (streamIdleTimer) clearTimeout(streamIdleTimer);
-            if (fullContent) {
-              return { success: true, content: fullContent };
-            }
-            return { success: false, error: '流式响应中断，未接收到有效内容。' };
-          }
-
-          if (streamIdleTimer) clearTimeout(streamIdleTimer);
-
-          if (activeRequestId === requestId) {
-            activeRequestId = null;
-            activeController = null;
-          }
-
-          if (!fullContent) {
-            return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
-          }
-          return { success: true, content: fullContent };
-        }
-
-        // 非流式响应
-        const json = await response.json();
-        const content = json.choices?.[0]?.message?.content ?? '';
-
-        if (activeRequestId === requestId) {
-          activeRequestId = null;
-          activeController = null;
-        }
-
-        if (!content) {
-          return { success: false, error: 'AI 未生成有效内容，请调整输入后重试。' };
-        }
-        return { success: true, content };
-      } catch (error: unknown) {
-        clearTimeout(timeoutId);
-
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          if (activeRequestId !== requestId) {
-            return { success: false, cancelled: true };
-          }
-          activeRequestId = null;
-          activeController = null;
-          return { success: false, error: '请求超时，请增加超时时间或缩短输入内容后重试。' };
-        }
-        if (error instanceof TypeError) {
-          return { success: false, error: '网络错误，请检查网络连接后重试。' };
-        }
+      if (!result.success || !result.content) {
         return {
-          success: false,
-          error: `请求失败：${error instanceof Error ? error.message : '未知错误'}`,
+          issues: [],
+          summary: result.error ?? '一致性检查失败',
+          checkedAt: new Date().toISOString(),
         };
       }
+
+      // 解析 JSON 结果（兼容 ```json 和 ``` json 等变体）
+      try {
+        const cleanContent = result.content
+          .replace(/^```[\s\S]*?\n/gm, '')  // 去除开头的 fence 行（含语言标签）
+          .replace(/^```\s*$/gm, '')         // 去除结尾的 fence 行
+          .trim();
+        const parsed = JSON.parse(cleanContent);
+        return {
+          issues: (parsed.issues || []).map((issue: Record<string, unknown>, idx: number) => ({
+            id: crypto.randomUUID(),
+            category: issue.category as ConsistencyReportIssue['category'] ?? 'plot',
+            severity: issue.severity as ConsistencyReportIssue['severity'] ?? 'info',
+            title: String(issue.title ?? `问题 ${idx + 1}`),
+            description: String(issue.description ?? ''),
+            location: issue.location ? String(issue.location) : undefined,
+            suggestion: String(issue.suggestion ?? ''),
+          })),
+          summary: String(parsed.summary ?? '检查完成'),
+          checkedAt: new Date().toISOString(),
+        };
+      } catch {
+        return {
+          issues: [],
+          summary: '一致性检查结果解析失败，请重试。',
+          checkedAt: new Date().toISOString(),
+        };
+      }
+    },
+
+    /* ══════════════════════════════════════════════════════════════
+       analyzeStyle — 分析写作风格指纹
+       ══════════════════════════════════════════════════════════════ */
+    analyzeStyle(chapterId: string): StyleFingerprint {
+      const chapter = chapterStore.getChapter(chapterId);
+      if (!chapter) {
+        return {
+          avgSentenceLength: 0, avgParagraphLength: 0, dialogueRatio: 0,
+          topWords: [], styleDescription: '', confidence: 0,
+        };
+      }
+
+      // 收集最近几章内容
+      const allChapters = chapterStore.listChapters(chapter.projectId);
+      const currentIndex = allChapters.findIndex((c) => c.id === chapterId);
+      const recentChapters = allChapters.slice(Math.max(0, currentIndex - 2), currentIndex + 1);
+
+      return analyzeStyleFingerprint(recentChapters.map((c) => c.content).join('\n\n'));
+    },
+
+    /* ══════════════════════════════════════════════════════════════
+       runSkillPipeline — 技能链
+       ══════════════════════════════════════════════════════════════ */
+    async runSkillPipeline(
+      chapterId: string,
+      skills: WritingSkill[],
+      onChunk?: (chunk: string) => void,
+    ): Promise<AIGenerateResult> {
+      if (skills.length === 0) {
+        return { success: false, error: '技能链为空' };
+      }
+
+      const provider = aiStore.getActiveProvider();
+      if (!provider) {
+        return { success: false, error: 'AI 模型未配置' };
+      }
+
+      const validation = this.validateConfig(provider);
+      if (!validation.valid) {
+        return { success: false, error: `AI 配置无效：${validation.errors.join('；')}` };
+      }
+
+      // 依次执行每个技能，将上一步输出作为下一步输入
+      const template = aiStore.getActiveTemplate();
+      const context = this.packContext(chapterId);
+      let input = context.chapterContent.slice(-500) || '请开始创作';
+
+      for (let i = 0; i < skills.length; i++) {
+        const skill = skills[i];
+        const isLast = i === skills.length - 1;
+
+        // 构建当前技能的 prompt
+        const skillPrompt = skill.promptTemplate || '';
+        const combinedInput = `${skillPrompt}\n\n${input}`;
+
+        const { messages } = this.buildPrompt(context, combinedInput, template);
+
+        const result = await callAIAPI({
+          provider,
+          messages,
+          onChunk: isLast ? onChunk : undefined, // 仅最后一步流式输出
+        }, activeState);
+
+        if (!result.success) {
+          return { success: false, error: `技能链第 ${i + 1} 步（${skill.name}）失败：${result.error}` };
+        }
+
+        input = result.content ?? input;
+      }
+
+      // 注意：最后一步已通过 callAIAPI 的 onChunk 流式输出，
+      // 此处不再重复调用 onChunk，避免内容重复
+      return { success: true, content: input };
     },
   };
 }

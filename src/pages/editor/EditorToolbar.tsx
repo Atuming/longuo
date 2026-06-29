@@ -1,8 +1,16 @@
 import type { CSSProperties } from 'react';
 import { Toolbar } from '../../components/layout/Toolbar';
+import type { SaveStatus } from '../../components/editor/WritingEditor';
 
 export type ViewMode = 'writing' | 'graph' | 'timeline' | 'plot';
 export type PanelMode = 'none' | 'character' | 'world' | 'timeline' | 'consistency' | 'version-history';
+
+const SAVE_STATUS_LABELS: Record<SaveStatus, { text: string; color: string }> = {
+  saved: { text: '已自动保存', color: '#68D391' },
+  saving: { text: '保存中...', color: 'rgba(255,255,255,0.6)' },
+  failed: { text: '保存失败', color: '#FC8181' },
+  manual: { text: '手动保存模式', color: '#F6AD55' },
+};
 
 /* ── toolbar styles (module-level, no re-creation per render) ── */
 const s: Record<string, CSSProperties> = {
@@ -134,6 +142,7 @@ export interface EditorToolbarProps {
   onOpenExportDialog: () => void;
   onBack: () => void;
   onSearch: () => void;
+  saveStatus: SaveStatus;
 }
 
 export function EditorToolbar({
@@ -157,6 +166,7 @@ export function EditorToolbar({
   onOpenExportDialog,
   onBack,
   onSearch,
+  saveStatus,
 }: EditorToolbarProps) {
   /* ── focus mode toolbar ── */
   if (focusMode) {
@@ -187,7 +197,9 @@ export function EditorToolbar({
       <button style={s.toolBtn} onClick={onSave}>
         保存
       </button>
-      <span style={s.autoSaveHint}>已自动保存</span>
+      <span style={{ ...s.autoSaveHint, color: SAVE_STATUS_LABELS[saveStatus].color }}>
+        {SAVE_STATUS_LABELS[saveStatus].text}
+      </span>
 
       <span style={s.separator} />
 

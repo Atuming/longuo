@@ -1,6 +1,6 @@
 import { useCallback, type CSSProperties, type RefObject } from 'react';
 import { WritingEditor } from '../../components/editor/WritingEditor';
-import type { WritingEditorHandle } from '../../components/editor/WritingEditor';
+import type { WritingEditorHandle, SaveStatus } from '../../components/editor/WritingEditor';
 import { RelationshipGraphPage } from '../../components/graph/RelationshipGraphPage';
 import { AIAssistantPanel } from '../../components/ai/AIAssistantPanel';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
@@ -11,6 +11,8 @@ import type { ViewMode } from './EditorToolbar';
 import type { Character } from '../../types/character';
 import type { TimelinePoint } from '../../types/timeline';
 import type { PlotThread } from '../../types/plot';
+import type { ConsistencyReport } from '../../types/ai';
+import type { AIQuickAction } from '../../components/editor/SelectionToolbar';
 
 /* ── styles (module-level, no re-creation per render) ── */
 const s: Record<string, CSSProperties> = {
@@ -44,6 +46,12 @@ export interface EditorContentProps {
   onDeletePlot: (threadId: string) => void;
   onSelectTimeline: (pointId: string) => void;
   onSelectPlot: (threadId: string) => void;
+  onSave?: () => Promise<void>;
+  onSaveStatusChange?: (status: SaveStatus) => void;
+  onConsistencyReport?: (report: ConsistencyReport) => void;
+  onQuickAI?: (action: AIQuickAction, selectedText: string) => void;
+  quickAIPayload?: { skillId: string; text: string } | null;
+  onQuickAIPayloadConsumed?: () => void;
 }
 
 export function EditorContent({
@@ -63,6 +71,12 @@ export function EditorContent({
   onDeletePlot,
   onSelectTimeline,
   onSelectPlot,
+  onSave,
+  onSaveStatusChange,
+  onConsistencyReport,
+  onQuickAI,
+  quickAIPayload,
+  onQuickAIPayloadConsumed,
 }: EditorContentProps) {
   const {
     projectId,
@@ -81,7 +95,8 @@ export function EditorContent({
     [characterStore, projectId],
   );
 
-  const selectedText = editorRef.current?.getSelectedText() ?? '';
+  // Lazy getter for editor selected text — called at generate time, not render time
+  const getSelectedText = useCallback(() => editorRef.current?.getSelectedText() ?? '', [editorRef]);
 
   switch (viewMode) {
     case 'graph':
@@ -134,6 +149,9 @@ export function EditorContent({
               projectId={projectId}
               isDark={effectiveTheme === 'dark'}
               getCharacters={getCharacters}
+              onSave={onSave}
+              onSaveStatusChange={onSaveStatusChange}
+              onQuickAI={onQuickAI}
             />
           </ErrorBoundary>
           <AIAssistantPanel
@@ -145,7 +163,10 @@ export function EditorContent({
             aiEngine={aiEngine}
             onAccept={onAIAccept}
             onOpenSettings={onOpenAIConfig}
-            selectedText={selectedText}
+            getSelectedText={getSelectedText}
+            onConsistencyReport={onConsistencyReport}
+            quickPayload={quickAIPayload}
+            onQuickPayloadConsumed={onQuickAIPayloadConsumed}
           />
         </div>
       );

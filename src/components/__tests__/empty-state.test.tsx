@@ -33,6 +33,7 @@ function createEmptyChapterStore(): ChapterStore {
     deleteChapter: vi.fn(),
     reorderChapter: vi.fn(),
     getWordCount: vi.fn(() => 0),
+    loadData: vi.fn(),
   };
 }
 
@@ -46,6 +47,8 @@ function createEmptyCharacterStore(): CharacterStore {
     deleteCharacter: vi.fn(),
     getSnapshotAtTimeline: vi.fn(() => undefined),
     setSnapshotAtTimeline: vi.fn(),
+    loadData: vi.fn(),
+    listAllSnapshots: vi.fn(() => []),
   };
 }
 
@@ -63,6 +66,7 @@ function createEmptyWorldStore(): WorldStore {
     updateCustomCategory: vi.fn(),
     deleteCustomCategory: vi.fn(),
     getAllCategories: vi.fn(() => []),
+    loadData: vi.fn(),
   };
 }
 
@@ -77,6 +81,7 @@ function createEmptyTimelineStore(): TimelineStore {
     filterByChapter: vi.fn(() => []),
     filterByCharacter: vi.fn(() => []),
     getReferences: vi.fn(() => ({ characterSnapshots: 0, relationships: 0 })),
+    loadData: vi.fn(),
   };
 }
 
@@ -88,6 +93,7 @@ function createEmptyPlotStore(): PlotStore {
     createThread: vi.fn() as any,
     updateThread: vi.fn(),
     deleteThread: vi.fn(),
+    loadData: vi.fn(),
   };
 }
 
@@ -101,6 +107,7 @@ function createEmptyRelationshipStore(): RelationshipStore {
     updateRelationship: vi.fn(),
     deleteRelationship: vi.fn(),
     filterByType: vi.fn(() => []),
+    loadData: vi.fn(),
   };
 }
 

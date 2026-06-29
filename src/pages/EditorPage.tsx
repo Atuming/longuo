@@ -8,17 +8,19 @@ import { WorldTab } from '../components/sidebar/WorldTab';
 import { TimelineTab } from '../components/sidebar/TimelineTab';
 import { PlotTab } from '../components/sidebar/PlotTab';
 import { WritingEditor } from '../components/editor/WritingEditor';
-import type { WritingEditorHandle } from '../components/editor/WritingEditor';
+import type { WritingEditorHandle, SaveStatus } from '../components/editor/WritingEditor';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
 import { showToast } from '../components/ui/Toast';
 import { EditorStoreProvider } from './editor/EditorStoreContext';
 import { EditorToolbar, type ViewMode, type PanelMode } from './editor/EditorToolbar';
+import type { AIQuickAction } from '../components/editor/SelectionToolbar';
 import { EditorContent } from './editor/EditorContent';
 import { EditorRightPanel } from './editor/EditorRightPanel';
 import { DialogManager } from './editor/DialogManager';
 import type { ProjectStore } from '../types/stores';
 import type { NovelFileData } from '../types/project';
 import type { ConsistencyIssue } from '../types/consistency';
+import type { ConsistencyReport } from '../types/ai';
 import type { Character } from '../types/character';
 import type { WorldEntry, ExtractedWorldEntry, ExtractedCharacter, ExtractedResult } from '../types/world';
 import type { TimelinePoint } from '../types/timeline';
@@ -215,6 +217,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
       aiStore.setBuiltInSkills(skills);
     });
   }, [aiStore]);
+
   const exportEngine = useMemo(() => createExportEngine(), []);
   const aiEngine = useMemo(() => createAIAssistantEngine({
     chapterStore, characterStore, worldStore, timelineStore, aiStore,
@@ -229,6 +232,9 @@ function EditorPage({ projectStore }: EditorPageProps) {
   useEffect(() => {
     document.documentElement.dataset.theme = effectiveTheme;
   }, [effectiveTheme]);
+
+  // Search
+  const [showSearch, setShowSearch] = useState(false);
 
   // Ctrl+Shift+F → search
   useEffect(() => {
@@ -267,9 +273,11 @@ function EditorPage({ projectStore }: EditorPageProps) {
   // AI
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [showAIConfig, setShowAIConfig] = useState(false);
+  // Quick AI: pre-fill skill + text when triggered from selection toolbar
+  const [quickAIPayload, setQuickAIPayload] = useState<{ skillId: string; text: string } | null>(null);
 
-  // Search
-  const [showSearch, setShowSearch] = useState(false);
+  // Save status (lifted from WritingEditor for toolbar display)
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
 
   // Character edit dialog
   const [editingCharacter, setEditingCharacter] = useState<Character | null>(null);
@@ -305,6 +313,22 @@ function EditorPage({ projectStore }: EditorPageProps) {
   const projectId = project?.id ?? '';
   const projectName = project?.name ?? '未命名项目';
 
+  /* ── Load project data into stores on mount / project change ── */
+  useEffect(() => {
+    const fileData = projectStore.getProjectData();
+    if (!fileData) return;
+    chapterStore.loadData(fileData.chapters);
+    characterStore.loadData(fileData.characters, fileData.characterSnapshots);
+    relationshipStore.loadData(fileData.relationships);
+    worldStore.loadData(fileData.worldEntries, fileData.customWorldCategories ?? [], projectId);
+    timelineStore.loadData(fileData.timelinePoints);
+    plotStore.loadData(fileData.plotThreads);
+    if (fileData.tagData) tagStore.importData(fileData.tagData);
+    tagStore.ensurePresetTags(projectId);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- closure stores need explicit re-render trigger
+    setRefreshKey((k) => k + 1);
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleBack = useCallback(() => navigate('/'), [navigate]);
   const toggleFocus = useCallback(() => setFocusMode((v) => !v), []);
 
@@ -326,6 +350,42 @@ function EditorPage({ projectStore }: EditorPageProps) {
     setConsistencyFixedCount(0);
     setPanelMode('consistency');
   }, [selectedChapterId, chapterStore, characterStore, projectId, consistencyEngine]);
+
+  /* ── AI 一致性报告处理 ── */
+  const handleAIConsistencyReport = useCallback((report: ConsistencyReport) => {
+    if (report.issues.length === 0) {
+      showToast('success', report.summary || 'AI 一致性检查通过，未发现问题');
+      return;
+    }
+    // 将 AI 报告问题转换为一致性面板可显示的格式
+    const issues: ConsistencyIssue[] = report.issues.map((aiIssue) => ({
+      id: aiIssue.id,
+      chapterId: selectedChapterId ?? '',
+      offset: 0,
+      length: 0,
+      foundText: aiIssue.location ?? aiIssue.description.slice(0, 50),
+      suggestedName: aiIssue.suggestion,
+      similarity: aiIssue.severity === 'critical' ? 0.95 : aiIssue.severity === 'warning' ? 0.8 : 0.6,
+      ignored: false,
+    }));
+    setConsistencyIssues(issues);
+    setConsistencyFixedCount(0);
+    setPanelMode('consistency');
+    showToast('success', `${report.summary}（${report.issues.length} 个问题）`);
+  }, [selectedChapterId]);
+
+  /* ── Quick AI from selection toolbar ── */
+  const ACTION_SKILL_MAP: Record<AIQuickAction, string> = {
+    polish: 'builtin-polish',
+    expand: 'builtin-expand',
+    rewrite: 'builtin-rewrite',
+    dialogue: 'builtin-dialogue',
+  };
+  const handleQuickAI = useCallback((action: AIQuickAction, selectedText: string) => {
+    const skillId = ACTION_SKILL_MAP[action];
+    setQuickAIPayload({ skillId, text: selectedText });
+    setShowAIPanel(true);
+  }, []);
 
   const handleApplyConsistency = useCallback((issue: ConsistencyIssue) => {
     const chapter = chapterStore.getChapter(issue.chapterId);
@@ -405,14 +465,22 @@ function EditorPage({ projectStore }: EditorPageProps) {
       project: project ?? { id: projectId, name: projectName, description: '', createdAt: new Date(), updatedAt: new Date() },
       chapters: chapterStore.listChapters(projectId),
       characters: characterStore.listCharacters(projectId),
-      characterSnapshots: [],
+      characterSnapshots: characterStore.listAllSnapshots(),
       relationships: relationshipStore.listRelationships(projectId),
       timelinePoints: timelineStore.listTimelinePoints(projectId),
       worldEntries: worldStore.listEntries(projectId),
       plotThreads: plotStore.listThreads(projectId),
+      customWorldCategories: worldStore.listCustomCategories(projectId),
       tagData: tagStore.exportData(projectId),
     };
   }, [project, projectId, projectName, chapterStore, characterStore, relationshipStore, timelineStore, worldStore, plotStore, tagStore]);
+
+  /** Sync store data to ProjectStore, then save to file */
+  const syncAndSave = useCallback(async () => {
+    const data = collectProjectData();
+    projectStore.setProjectData(data);
+    await projectStore.saveProject();
+  }, [collectProjectData, projectStore]);
 
   const handleSaveSnapshot = useCallback(() => {
     const note = window.prompt('请输入快照备注：', '');
@@ -426,21 +494,36 @@ function EditorPage({ projectStore }: EditorPageProps) {
     }
   }, [collectProjectData, snapshotStore, projectId]);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleRestoreSnapshot = useCallback((_restoredData: NovelFileData) => {
+  const handleRestoreSnapshot = useCallback((restoredData: NovelFileData) => {
     try {
       const currentData = collectProjectData();
       snapshotStore.createSnapshot(projectId, currentData, '恢复前自动备份');
     } catch {
-      // If auto-backup fails, still show the toast
+      // If auto-backup fails, still proceed with restore
     }
-    showToast('success', '已恢复到快照，建议刷新页面以加载完整数据');
-  }, [collectProjectData, snapshotStore, projectId]);
+    // Write restored data back to all stores
+    chapterStore.loadData(restoredData.chapters);
+    characterStore.loadData(restoredData.characters, restoredData.characterSnapshots);
+    relationshipStore.loadData(restoredData.relationships);
+    worldStore.loadData(restoredData.worldEntries, restoredData.customWorldCategories ?? [], projectId);
+    timelineStore.loadData(restoredData.timelinePoints);
+    plotStore.loadData(restoredData.plotThreads);
+    if (restoredData.tagData) tagStore.importData(restoredData.tagData);
+    // Sync to projectStore so next save persists the restored state
+    projectStore.setProjectData(restoredData);
+    setRefreshKey((k) => k + 1);
+    showToast('success', '已恢复到快照');
+  }, [collectProjectData, snapshotStore, projectId, chapterStore, characterStore, relationshipStore, worldStore, timelineStore, plotStore, tagStore, projectStore]);
 
   /* ── Save handler ── */
   const handleSave = useCallback(async () => {
-    try { await projectStore.saveProject(); showToast('success', '已保存'); } catch { showToast('error', '保存失败'); }
-  }, [projectStore]);
+    try {
+      await syncAndSave();
+      showToast('success', '已保存');
+    } catch {
+      showToast('error', '保存失败');
+    }
+  }, [syncAndSave]);
 
   /* ── Dialog callbacks ── */
   const handleCharConfirm = useCallback((data: Omit<Character, 'id' | 'projectId'>) => {
@@ -550,7 +633,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
     input.click();
   }, [aiStore, aiEngine]);
 
-  const handleWorldExtractConfirm = useCallback((_characters: Character[], _entries: WorldEntry[]) => {
+  const handleWorldExtractConfirm = useCallback((_characters: Character[], _entries: WorldEntry[]) => { // eslint-disable-line @typescript-eslint/no-unused-vars
     setShowWorldExtractDialog(false);
     setWorldExtractResult({ characters: [], worldEntries: [] });
     setWorldExtractFileName('');
@@ -767,7 +850,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
             <button style={s.toolBtn} onClick={toggleFocus}>退出专注模式</button>
           </div>
           <div style={s.focusEditor}>
-            <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} />
+            <WritingEditor ref={editorRef} chapterId={selectedChapterId} chapterStore={chapterStore} projectStore={projectStore} projectId={projectId} isDark={effectiveTheme === 'dark'} getCharacters={getCharacters} onSave={syncAndSave} onSaveStatusChange={setSaveStatus} onQuickAI={handleQuickAI} />
           </div>
         </div>
       </EditorStoreProvider>
@@ -817,6 +900,7 @@ function EditorPage({ projectStore }: EditorPageProps) {
             onOpenExportDialog={() => setShowExportDialog(true)}
             onBack={handleBack}
             onSearch={handleSearch}
+            saveStatus={saveStatus}
           />
         }
         sidebar={
@@ -864,6 +948,12 @@ function EditorPage({ projectStore }: EditorPageProps) {
             onDeletePlot={handleDeletePlot}
             onSelectTimeline={handleSelectTimeline}
             onSelectPlot={handleSelectPlot}
+            onSave={syncAndSave}
+            onSaveStatusChange={setSaveStatus}
+            onConsistencyReport={handleAIConsistencyReport}
+            onQuickAI={handleQuickAI}
+            quickAIPayload={quickAIPayload}
+            onQuickAIPayloadConsumed={() => setQuickAIPayload(null)}
           />
         </ErrorBoundary>
       </EditorLayout>

@@ -9,6 +9,7 @@ import type { ChapterStore, ProjectStore } from '../../types/stores';
 import type { Character } from '../../types/character';
 import { showToast } from '../ui/Toast';
 import { DailyGoalProgress } from './DailyGoalProgress';
+import { SelectionToolbar, type AIQuickAction } from './SelectionToolbar';
 import { createCrossReferenceExtension } from '../../lib/cross-reference';
 import { typewriterMode } from '../../lib/typewriter-mode';
 
@@ -77,6 +78,12 @@ interface WritingEditorProps {
   projectId?: string;
   isDark?: boolean;
   getCharacters?: () => Character[];
+  /** Override the save logic (sync store data + save). If not provided, falls back to projectStore.saveProject() */
+  onSave?: () => Promise<void>;
+  /** Called whenever save status changes, so parent can display it in toolbar */
+  onSaveStatusChange?: (status: SaveStatus) => void;
+  /** Called when user triggers an AI quick action from the selection toolbar */
+  onQuickAI?: (action: AIQuickAction, selectedText: string) => void;
 }
 
 /** 暴露给父组件的方法 */
@@ -87,7 +94,7 @@ export interface WritingEditorHandle {
   getSelectedText: () => string;
 }
 
-export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>(function WritingEditor({ chapterId, chapterStore, projectStore, projectId, isDark = false, getCharacters }, ref) {
+export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>(function WritingEditor({ chapterId, chapterStore, projectStore, projectId, isDark = false, getCharacters, onSave, onSaveStatusChange, onQuickAI }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [cursorInfo, setCursorInfo] = useState({ line: 1, col: 1 });
@@ -98,6 +105,14 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
   const failCountRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Selection toolbar state ──
+  const [selToolbarPos, setSelToolbarPos] = useState<{ top: number; left: number } | null>(null);
+  const [selToolbarText, setSelToolbarText] = useState('');
+  const editorWrapperRef = useRef<HTMLDivElement>(null);
+
+  // ── Repeated word detection ──
+  const [repeatedWords, setRepeatedWords] = useState<{ word: string; count: number }[]>([]);
 
   /* ── expose appendContent / insertAtCursor / getCursorPosition to parent ── */
   const appendContent = useCallback((content: string) => {
@@ -159,12 +174,82 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
     return (chinese?.length || 0) + english.length;
   }, []);
 
+  /* ── detect repeated words ── */
+  const STOP_WORDS = useMemo(() => new Set([
+    '的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '他', '她', '它',
+    '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好',
+    '自己', '这', '那', '什么', '而', '以', '之', '与', '及', '为', '所', '其', '但', '被',
+    '把', '从', '对', '向', '往', '时', '后', '前', '里', '外', '中', '来', '能', '可以',
+    '已经', '正在', '将', '还', '又', '再', '才', '刚', '便', '却', '只', '仍', '并',
+    '我们', '他们', '她们', '它们', '这个', '那个', '哪个', '怎么', '怎么样', '因为',
+    '所以', '但是', '虽然', '如果', '然后', '不过', '于是', '接着', '忽然', '突然',
+    '一下', '一些', '一点', '一种', '一阵', '一声', '一眼', '一边', '一会儿',
+    '只是', '还是', '可是', '不是', '就是', '都是', '还有', '出来', '起来',
+    '过来', '过去', '下来', '上去', '看来', '来说', '而言',
+  ]), []);
+
+  const computeRepeatedWords = useCallback((text: string) => {
+    const cleaned = text.replace(/[，。！？、；：""''「」『』（）【】《》\s\n\r\d]/g, '');
+    const freq = new Map<string, number>();
+    for (let i = 0; i < cleaned.length - 1; i++) {
+      const bigram = cleaned.slice(i, i + 2);
+      if (/^[一-鿿]{2}$/.test(bigram) && !STOP_WORDS.has(bigram)) {
+        freq.set(bigram, (freq.get(bigram) ?? 0) + 1);
+      }
+    }
+    return Array.from(freq.entries())
+      .filter(([, c]) => c > 3)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([word, count]) => ({ word, count }));
+  }, [STOP_WORDS]);
+
+  /* ── reading time estimate ── */
+  const readingTimeMinutes = wordCount > 0 ? Math.max(1, Math.round(wordCount / 300)) : 0;
+
+  /* ── selection change toolbar ── */
+  const updateSelectionToolbar = useCallback((view: EditorView) => {
+    const { from, to } = view.state.selection.main;
+    if (from === to) {
+      setSelToolbarPos(null);
+      setSelToolbarText('');
+      return;
+    }
+    const text = view.state.sliceDoc(from, to);
+    if (!text.trim()) {
+      setSelToolbarPos(null);
+      setSelToolbarText('');
+      return;
+    }
+    const endCoords = view.coordsAtPos(to);
+    const editorRect = editorWrapperRef.current?.getBoundingClientRect();
+    if (endCoords && editorRect) {
+      // Clamp position to keep toolbar inside the editor container
+      const toolbarEstWidth = 280; // approximate toolbar width in px
+      const toolbarEstHeight = 40; // approximate toolbar height in px
+      const top = Math.max(toolbarEstHeight + 8, endCoords.top - editorRect.top);
+      const left = Math.max(toolbarEstWidth / 2, Math.min(
+        editorRect.width - toolbarEstWidth / 2,
+        endCoords.left - editorRect.left + (endCoords.right - endCoords.left) / 2,
+      ));
+      setSelToolbarPos({ top, left });
+      setSelToolbarText(text);
+    } else {
+      // Selection end is scrolled out of viewport — hide toolbar
+      setSelToolbarPos(null);
+    }
+  }, []);
+
   /* ── save logic ── */
   const doSave = useCallback(async () => {
     if (saveStatus === 'manual') return;
     setSaveStatus('saving');
     try {
-      await projectStore.saveProject();
+      if (onSave) {
+        await onSave();
+      } else {
+        await projectStore.saveProject();
+      }
       setSaveStatus('saved');
       failCountRef.current = 0;
     } catch {
@@ -178,7 +263,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
         retryTimerRef.current = setTimeout(() => doSave(), 10_000);
       }
     }
-  }, [projectStore, saveStatus]);
+  }, [projectStore, saveStatus, onSave]);
 
   /* ── auto-save timer (30s) ── */
   useEffect(() => {
@@ -190,6 +275,11 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
   }, [chapterId, doSave, saveStatus]);
+
+  /* ── notify parent of save status changes ── */
+  useEffect(() => {
+    onSaveStatusChange?.(saveStatus);
+  }, [saveStatus, onSaveStatusChange]);
 
   /* ── keyboard shortcut: Ctrl+S to save ── */
   useEffect(() => {
@@ -228,11 +318,16 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
         const text = update.state.doc.toString();
         chapterStore.updateChapter(chapterId, { content: text });
         setWordCount(computeWordCount(text));
+        setRepeatedWords(computeRepeatedWords(text));
       }
       // cursor position
       const pos = update.state.selection.main.head;
       const line = update.state.doc.lineAt(pos);
       setCursorInfo({ line: line.number, col: pos - line.from + 1 });
+      // selection toolbar
+      if (update.selectionSet) {
+        updateSelectionToolbar(update.view);
+      }
     });
 
     const baseTheme = EditorView.theme({
@@ -265,6 +360,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
     setWordCount(computeWordCount(initialContent));
+    setRepeatedWords(computeRepeatedWords(initialContent));
 
     return () => { view.destroy(); viewRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -284,6 +380,20 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
   /* ── undo / redo ── */
   const handleUndo = () => { if (viewRef.current) undo(viewRef.current); };
   const handleRedo = () => { if (viewRef.current) redo(viewRef.current); };
+
+  /* ── selection toolbar handlers ── */
+  const handleQuickFormat = useCallback((prefix: string, suffix: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    const selected = view.state.sliceDoc(from, to);
+    view.dispatch({ changes: { from, to, insert: prefix + selected + suffix } });
+    view.focus();
+  }, []);
+
+  const handleQuickAI = useCallback((action: AIQuickAction, text: string) => {
+    onQuickAI?.(action, text);
+  }, [onQuickAI]);
 
   if (!chapterId) {
     return <div style={styles.empty}>请从左侧大纲选择一个章节开始写作</div>;
@@ -324,13 +434,27 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
         📍 {breadcrumb}
       </div>
 
-      {/* Editor */}
-      <div ref={containerRef} style={styles.editorContainer} />
+      {/* Editor + floating toolbar */}
+      <div ref={editorWrapperRef} style={{ ...styles.editorContainer, position: 'relative' }}>
+        <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+        <SelectionToolbar
+          position={selToolbarPos}
+          selectedText={selToolbarText}
+          onAction={handleQuickAI}
+          onFormat={handleQuickFormat}
+        />
+      </div>
 
       {/* Status bar */}
       <div style={styles.statusBar}>
         <span>字数: {wordCount}</span>
         <span>行 {cursorInfo.line} : 列 {cursorInfo.col}</span>
+        <span title="预计阅读时间">📖 ~{readingTimeMinutes} 分钟</span>
+        {repeatedWords.length > 0 && (
+          <span style={{ color: 'var(--color-warning, #F6AD55)' }} title={`高频词：${repeatedWords.map(w => `${w.word}(${w.count}次)`).join('、')}`}>
+            ⚠️ 高频: {repeatedWords.map(w => w.word).join(' ')}
+          </span>
+        )}
         {projectId && <DailyGoalProgress projectId={projectId} wordCount={wordCount} />}
         <button
           style={{

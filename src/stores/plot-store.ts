@@ -90,5 +90,15 @@ export function createPlotStore(options?: CreatePlotStoreOptions): PlotStore {
     deleteThread(id: string): void {
       threads.delete(id);
     },
+
+    loadData(data: PlotThread[]): void {
+      threads.clear();
+      for (const thread of data) {
+        threads.set(thread.id, {
+          ...thread,
+          associatedChapterIds: [...thread.associatedChapterIds],
+        });
+      }
+    },
   };
 }

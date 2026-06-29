@@ -270,6 +270,29 @@ export const BUILT_IN_SKILLS: WritingSkill[] = [
     enabled: true,
   },
   {
+    id: 'builtin-consistency',
+    name: '一致性检查',
+    icon: '🔍',
+    description: 'AI 驱动的全维度一致性分析：角色、时间线、情节、世界观、称呼',
+    promptTemplate:
+      '你是一位资深小说编辑，专门负责检查小说的一致性。请对当前章节进行全面的一致性分析。\n\n' +
+      '检查维度：\n' +
+      '1. 角色一致性：角色性格、行为、说话方式是否与设定及前文一致\n' +
+      '2. 时间线一致性：事件发生顺序是否合理，有无时间矛盾\n' +
+      '3. 情节连贯性：情节发展是否符合前文铺垫，伏笔是否被遗漏\n' +
+      '4. 世界观一致性：设定是否前后矛盾\n' +
+      '5. 称呼一致性：角色名称、称号是否前后统一\n\n' +
+      '请以严格的 JSON 格式输出检查报告。如果没有发现问题，issues 为空数组。\n' +
+      '格式：{"issues":[{"category":"character|timeline|plot|world|naming","severity":"critical|warning|info","title":"简短标题","description":"详细说明","location":"问题位置引用","suggestion":"修改建议"}],"summary":"总体评价"}',
+    parameters: [],
+    contextHints: [
+      { signal: 'wordCount', condition: 'high', weight: 1.0 },
+    ],
+    sortOrder: 7,
+    builtIn: true,
+    enabled: true,
+  },
+  {
     id: 'builtin-inner',
     name: '内心',
     icon: '💭',
@@ -289,7 +312,7 @@ export const BUILT_IN_SKILLS: WritingSkill[] = [
     contextHints: [
       { signal: 'hasCharacters', condition: 'true', weight: 1.5 },
     ],
-    sortOrder: 7,
+    sortOrder: 8,
     builtIn: true,
     enabled: true,
   },
@@ -299,17 +322,21 @@ export const BUILT_IN_SKILLS: WritingSkill[] = [
     icon: '\u{1F4E5}',
     description: '从文本中同时提取角色信息和世界观设定，导入到角色和世界观面板',
     promptTemplate:
-      '请从给定文本中同时提取角色信息和世界观设定。' +
-      '输出严格 JSON 对象：{"characters":[...],"worldEntries":[...]}。' +
-      'characters 每项含：name、aliases（字符串数组）、appearance、personality、backstory。' +
-      'worldEntries 每项含：name、type、description。' +
-      '具体有名字的个体归 characters，抽象设定归 worldEntries。种族只用于物种大类。',
+      '你是一个小说资料提取助手。你的任务是从给定的文本中同时提取两类信息：角色和世界观设定。' +
+      '输出严格的 JSON 对象格式，不要包含任何其他文字说明。' +
+      'JSON 结构如下：{"characters":[...],"worldEntries":[...]}\n' +
+      'characters 数组中每个元素包含：name（姓名）、aliases（别名列表）、appearance（外貌描写）、personality（性格特点）、backstory（背景故事）。' +
+      'worldEntries 数组中每个元素包含：name（名称）、type（分类 key）、description（详细描述）。' +
+      'worldEntries 的 type 取值：{category_list}。' +
+      '重要区分：具体的有名字的个体归 characters；抽象设定归 worldEntries。' +
+      '种族分类只用于物种大类，不要把具体角色放入种族。' +
+      '如果某一类没有提取到结果，对应数组为空。',
     parameters: [],
     contextHints: [
       { signal: 'hasWorldEntries', condition: 'false', weight: 1.0 },
       { signal: 'hasCharacters', condition: 'false', weight: 1.0 },
     ],
-    sortOrder: 8,
+    sortOrder: 9,
     builtIn: true,
     enabled: true,
   },

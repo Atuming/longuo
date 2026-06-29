@@ -164,6 +164,21 @@ export function createProjectStore(fileManager: FileManager): ProjectStore {
       }
       currentData.project.updatedAt = new Date();
     },
+
+    getProjectData(): NovelFileData | null {
+      if (!currentData) return null;
+      return structuredClone(currentData);
+    },
+
+    setProjectData(data: NovelFileData): void {
+      currentData = structuredClone(data);
+    },
+
+    removeRecentProject(filePath: string): void {
+      const list = readRecentProjects();
+      const filtered = list.filter((r) => r.filePath !== filePath);
+      writeRecentProjects(filtered);
+    },
   };
 }
 

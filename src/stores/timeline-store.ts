@@ -177,5 +177,16 @@ export function createTimelineStore(options?: CreateTimelineStoreOptions): Timel
         relationships: getRelationshipCount ? getRelationshipCount(id) : 0,
       };
     },
+
+    loadData(data: TimelinePoint[]): void {
+      points.clear();
+      for (const point of data) {
+        points.set(point.id, {
+          ...point,
+          associatedChapterIds: [...point.associatedChapterIds],
+          associatedCharacterIds: [...point.associatedCharacterIds],
+        });
+      }
+    },
   };
 }

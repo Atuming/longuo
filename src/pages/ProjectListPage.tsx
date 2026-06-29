@@ -172,6 +172,13 @@ export function ProjectListPage({ projectStore }: ProjectListPageProps) {
     }
   };
 
+  const handleDeleteRecent = (filePath: string, name: string) => {
+    if (!window.confirm(`确定要从最近列表中移除"${name}"吗？\n（不会删除文件本身）`)) return;
+    projectStore.removeRecentProject(filePath);
+    setRecentProjects(projectStore.getRecentProjects());
+    showToast('success', '已从最近列表移除');
+  };
+
   const formatDate = (date: Date) => {
     const d = new Date(date);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -220,7 +227,7 @@ export function ProjectListPage({ projectStore }: ProjectListPageProps) {
                     opacity: hoveredCard === project.filePath ? 1 : 0,
                   }}>
                     <button style={styles.iconBtn} title="打开" onClick={(e) => { e.stopPropagation(); handleOpenRecent(project.filePath); }}>📂</button>
-                    <button style={styles.iconBtn} title="删除" onClick={(e) => { e.stopPropagation(); }}>🗑</button>
+                    <button style={styles.iconBtn} title="删除" onClick={(e) => { e.stopPropagation(); handleDeleteRecent(project.filePath, project.name); }}>🗑</button>
                   </div>
                 </Card>
               ))}

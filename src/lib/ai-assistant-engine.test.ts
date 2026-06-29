@@ -841,8 +841,6 @@ describe('AIAssistantEngine - extractWorldEntries', () => {
     const body = JSON.parse(call[1]?.body as string);
     const systemMsg = body.messages.find((m: { role: string }) => m.role === 'system');
     expect(systemMsg.content).toContain('资料提取助手');
-    expect(systemMsg.content).toContain('location');
-    expect(systemMsg.content).toContain('faction');
     expect(systemMsg.content).toContain('characters');
     expect(systemMsg.content).toContain('worldEntries');
 

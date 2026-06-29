@@ -126,6 +126,54 @@ export interface AIGenerateRequest {
   selectionRange?: { start: number; end: number };
   /** 用户当前选中的文本（聚焦改写/润色范围） */
   selectedText?: string;
+  /** 多轮对话历史消息（不含 system prompt） */
+  conversationHistory?: ConversationMessage[];
+}
+
+/** 多轮对话消息 */
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/** AI 生成结果 */
+export interface AIGenerateResult {
+  success: boolean;
+  content?: string;
+  error?: string;
+  cancelled?: boolean;
+  /** 截断标记：流式中断但拿到部分内容 */
+  truncated?: boolean;
+  /** Token 用量统计 */
+  tokenUsage?: TokenUsage;
+}
+
+/** Token 用量统计 */
+export interface TokenUsage {
+  /** 估计的输入 token 数 */
+  estimatedInputTokens: number;
+  /** 模型上下文限制 */
+  contextLimit: number;
+  /** 使用比例 */
+  usageRatio: number;
+}
+
+/** AI 一致性检查报告 */
+export interface ConsistencyReport {
+  issues: ConsistencyReportIssue[];
+  summary: string;
+  checkedAt: string;
+}
+
+/** 一致性检查问题 */
+export interface ConsistencyReportIssue {
+  id: string;
+  category: 'character' | 'timeline' | 'plot' | 'world' | 'naming';
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  description: string;
+  location?: string;
+  suggestion: string;
 }
 
 /** AI 生成结果 */
@@ -144,6 +192,10 @@ export interface AIHistoryRecord {
   skillLabel: string;
   userInput: string;
   generatedContent: string;
+  /** 多轮对话历史（如果有） */
+  conversationHistory?: ConversationMessage[];
+  /** Token 用量 */
+  tokenUsage?: TokenUsage;
 }
 
 /** 技能参数定义 */
