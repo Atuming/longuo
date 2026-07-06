@@ -282,6 +282,7 @@ export function AIAssistantPanel({
   // ── Pipeline state ──
   const [pipelineSkills, setPipelineSkills] = useState<WritingSkill[]>([]);
   const [pipelineMode, setPipelineMode] = useState(false);
+  const [pipelineProgress, setPipelineProgress] = useState<{ current: number; total: number; skillName: string } | null>(null);
 
   // ── Token display ──
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
@@ -296,7 +297,7 @@ export function AIAssistantPanel({
   const characters = useMemo(() => {
     if (!projectId) return [];
     return characterStore.listCharacters(projectId).map((c) => ({ id: c.id, name: c.name }));
-  }, [characterStore, projectId, open]);
+  }, [characterStore, projectId]);
 
   // ── Refresh skills ──
   const refreshSkills = useCallback(() => {
@@ -459,31 +460,54 @@ export function AIAssistantPanel({
     setError(null);
     setResult('');
     resultRef.current = '';
+    setPipelineProgress({ current: 0, total: pipelineSkills.length, skillName: pipelineSkills[0].name });
 
     try {
-      const res = await aiEngine.runSkillPipeline(
-        chapterId,
-        pipelineSkills,
-        (chunk: string) => {
-          resultRef.current += chunk;
-          setResult(resultRef.current);
-        },
-      );
-      if (!res.success && !res.cancelled) {
-        setError(res.error ?? '技能链执行失败');
-      } else if (res.success && res.content && projectId) {
+      // Execute skills sequentially, showing progress
+      let input = '';
+      for (let i = 0; i < pipelineSkills.length; i++) {
+        const skill = pipelineSkills[i];
+        const isLast = i === pipelineSkills.length - 1;
+        setPipelineProgress({ current: i + 1, total: pipelineSkills.length, skillName: skill.name });
+
+        const resolved = aiEngine.resolveSkillPrompt(skill, {});
+        const effectiveInput = i === 0 ? resolved : `${resolved}\n\n${input}`;
+
+        const res = await aiEngine.generate(
+          { userInput: effectiveInput, chapterId, selectedText: getSelectedText?.() ?? '' },
+          isLast ? (chunk: string) => {
+            resultRef.current += chunk;
+            setResult(resultRef.current);
+          } : undefined,
+        );
+
+        if (!res.success) {
+          if (res.cancelled) return;
+          setError(`第 ${i + 1} 步（${skill.name}）失败：${res.error}`);
+          return;
+        }
+
+        input = res.content ?? input;
+      }
+
+      // Save final result
+      if (input && projectId) {
         aiStore.addHistoryRecord(projectId, {
           projectId,
           skillLabel: `🔗 ${pipelineSkills.map((s) => s.name).join(' → ')}`,
           userInput: `技能链: ${pipelineSkills.map((s) => s.name).join(' → ')}`,
-          generatedContent: res.content,
+          generatedContent: input,
         });
         refreshHistory();
+      }
+      if (!pipelineSkills[pipelineSkills.length - 1]?.promptTemplate.includes('{param:')) {
+        setResult(input);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
     } finally {
       setIsGenerating(false);
+      setPipelineProgress(null);
     }
   };
 
@@ -811,7 +835,12 @@ export function AIAssistantPanel({
 
               {/* ── Loading ── */}
               {isGenerating && !result && !conversationMode && (
-                <div style={s.loading}><span>⏳</span> AI 正在生成内容...</div>
+                <div style={s.loading}>
+                  <span>⏳</span>
+                  {pipelineProgress
+                    ? `执行技能链: ${pipelineProgress.current}/${pipelineProgress.total} — ${pipelineProgress.skillName}`
+                    : 'AI 正在生成内容...'}
+                </div>
               )}
 
               {/* ── Result (non-conversation mode) ── */}

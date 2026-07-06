@@ -42,6 +42,7 @@ export function CharacterDialog({ open, initialData, onConfirm, onCancel }: Char
     if (open && !prevOpen) {
       if (initialData) {
         const { id: _, projectId: __, ...rest } = initialData; // eslint-disable-line @typescript-eslint/no-unused-vars
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- form reset on dialog open
         setForm(rest);
       } else {
         setForm(emptyForm);

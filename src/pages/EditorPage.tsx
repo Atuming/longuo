@@ -38,6 +38,14 @@ import { createSnapshotStore } from '../stores/snapshot-store';
 import { createEventBus } from '../lib/event-bus';
 import { createConsistencyEngine } from '../lib/consistency-engine';
 import { createExportEngine } from '../lib/export-engine';
+
+/** Quick AI action → skill ID mapping */
+const QUICK_ACTION_SKILL_MAP: Record<AIQuickAction, string> = {
+  polish: 'builtin-polish',
+  expand: 'builtin-expand',
+  rewrite: 'builtin-rewrite',
+  dialogue: 'builtin-dialogue',
+};
 import { createAIAssistantEngine } from '../lib/ai-assistant-engine';
 import { createTagStore } from '../stores/tag-store';
 import { WorldExtractDialog } from '../components/dialogs/WorldExtractDialog';
@@ -358,13 +366,14 @@ function EditorPage({ projectStore }: EditorPageProps) {
       return;
     }
     // 将 AI 报告问题转换为一致性面板可显示的格式
+    const CATEGORY_LABELS: Record<string, string> = { character: '角色', timeline: '时间线', plot: '情节', world: '世界观', naming: '称呼' };
     const issues: ConsistencyIssue[] = report.issues.map((aiIssue) => ({
       id: aiIssue.id,
       chapterId: selectedChapterId ?? '',
       offset: 0,
       length: 0,
-      foundText: aiIssue.location ?? aiIssue.description.slice(0, 50),
-      suggestedName: aiIssue.suggestion,
+      foundText: `[${CATEGORY_LABELS[aiIssue.category] ?? aiIssue.category}] ${aiIssue.title}`,
+      suggestedName: `${aiIssue.description}\n\n💡 ${aiIssue.suggestion}`,
       similarity: aiIssue.severity === 'critical' ? 0.95 : aiIssue.severity === 'warning' ? 0.8 : 0.6,
       ignored: false,
     }));
@@ -375,14 +384,8 @@ function EditorPage({ projectStore }: EditorPageProps) {
   }, [selectedChapterId]);
 
   /* ── Quick AI from selection toolbar ── */
-  const ACTION_SKILL_MAP: Record<AIQuickAction, string> = {
-    polish: 'builtin-polish',
-    expand: 'builtin-expand',
-    rewrite: 'builtin-rewrite',
-    dialogue: 'builtin-dialogue',
-  };
   const handleQuickAI = useCallback((action: AIQuickAction, selectedText: string) => {
-    const skillId = ACTION_SKILL_MAP[action];
+    const skillId = QUICK_ACTION_SKILL_MAP[action];
     setQuickAIPayload({ skillId, text: selectedText });
     setShowAIPanel(true);
   }, []);

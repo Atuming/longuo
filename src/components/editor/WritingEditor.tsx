@@ -296,6 +296,7 @@ export const WritingEditor = forwardRef<WritingEditorHandle, WritingEditorProps>
   // Sync typewriter ref with state
   useEffect(() => {
     typewriterRef.current = typewriterOn;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- typewriterRef is stable useMemo
   }, [typewriterOn]);
 
   /* ── create / update editor ── */

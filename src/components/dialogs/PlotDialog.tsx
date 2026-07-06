@@ -44,6 +44,7 @@ export function PlotDialog({ open, initialData, projectId, chapters, onConfirm, 
 
   useEffect(() => {
     if (open && !prevOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- form reset on dialog open
       setForm(initialData ? { ...initialData } : { projectId, name: '', description: '', status: 'pending', associatedChapterIds: [] });
     }
     setPrevOpen(open);

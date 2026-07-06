@@ -115,10 +115,10 @@ export function OutlineTab({ projectId, chapterStore, tagStore, selectedChapterI
     setChapters(derivedChapters);
   }
 
-  const refreshChapters = () => {
+  const refreshChapters = useCallback(() => {
     const updated = chapterStore.listChapters(projectId);
     setChapters(updated);
-  };
+  }, [chapterStore, projectId]);
 
   /* close context menu on outside click */
   useEffect(() => {
@@ -147,7 +147,7 @@ export function OutlineTab({ projectId, chapterStore, tagStore, selectedChapterI
   const handleTagPopoverClose = useCallback(() => {
     setTagPopover(null);
     refreshChapters();
-  }, []);
+  }, [refreshChapters]);
 
   const chapterTagMap = useMemo(() => {
     if (!tagStore) return new Map<string, Set<string>>();

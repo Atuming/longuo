@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+/* eslint-disable @typescript-eslint/no-explicit-any -- test mocks use vi.fn() which infers any */
 import { describe, it, expect, vi } from 'vitest';
 import { OutlineTab } from '../sidebar/OutlineTab';
 import { CharacterTab } from '../sidebar/CharacterTab';

@@ -57,6 +57,7 @@ export function RelationshipDialog({
 
   useEffect(() => {
     if (open && !prevOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- form reset on dialog open
       setForm(initialData ? { ...initialData } : {
         projectId, sourceCharacterId, targetCharacterId: '',
         relationshipType: 'friend', customTypeName: '', description: '',

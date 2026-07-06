@@ -63,6 +63,7 @@ export function SelectionToolbar({ position, selectedText, onAction, onFormat }:
     if (position && selectedText) {
       timerRef.current = setTimeout(() => setVisible(true), 200);
     } else {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- debounce reset on selection clear
       setVisible(false);
     }
     return () => {

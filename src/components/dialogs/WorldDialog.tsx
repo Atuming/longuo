@@ -53,6 +53,7 @@ export function WorldDialog({ open, initialData, projectId, characters, customCa
 
   useEffect(() => {
     if (open && !prevOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- form reset on dialog open
       setForm(initialData ? { ...initialData } : { projectId, type: 'location', name: '', description: '', category: '', associatedCharacterIds: [] });
       setShowAddCustom(false);
       setNewCustomLabel('');

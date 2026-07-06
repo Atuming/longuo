@@ -36,6 +36,7 @@ export function TimelineDialog({ open, initialData, projectId, chapters, charact
 
   useEffect(() => {
     if (open && !prevOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- form reset on dialog open
       setForm(initialData ? { ...initialData } : {
         projectId, label: '', description: '', sortOrder: 0,
         associatedChapterIds: [], associatedCharacterIds: [],

@@ -320,6 +320,7 @@ describe('Feature: comprehensive-quality-audit, Property 2: Store 防御性拷�
         const origDesc = data.description;
         const origType = data.relationshipType;
         first.description = 'MUTATED_DESC';
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- property test mutation
         (first as any).relationshipType = 'MUTATED_TYPE';
 
         const second = store.getRelationship(created.id)!;
